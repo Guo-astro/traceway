@@ -51,6 +51,7 @@
 		'Logs',
 		'Endpoints',
 		'Tasks',
+		'Spans',
 		'Profiles',
 		'Dashboards',
 		'AI Traces',
