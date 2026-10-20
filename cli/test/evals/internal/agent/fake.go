@@ -1,0 +1,313 @@
+package agent
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+
+	"github.com/tracewayapp/traceway/cli/test/evals/internal/catalog"
+)
+
+// Fake is an httptest server speaking Chat Completions that plays a case's
+// oracle steps, one tool call per turn. It is the only model `go test` can
+// reach.
+type Fake struct {
+	Steps []catalog.Step
+	// FileRoot resolves write_file `from:` paths.
+	FileRoot string
+
+	srv  *httptest.Server
+	mu   sync.Mutex
+	errs []string
+}
+
+// NewFake starts the fake model.
+func NewFake(steps []catalog.Step, fileRoot string) *Fake {
+	f := &Fake{Steps: steps, FileRoot: fileRoot}
+	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
+	return f
+}
+
+// Client returns a Chat Completions client pointed at the fake.
+func (f *Fake) Client() *Client { return &Client{BaseURL: f.srv.URL, Retries: 1} }
+
+// Close stops the server.
+func (f *Fake) Close() { f.srv.Close() }
+
+// Errors returns oracle rendering problems (a step naming a tool the arm
+// does not have, a template that resolved to nothing, ...).
+func (f *Fake) Errors() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string{}, f.errs...)
+}
+
+func (f *Fake) fail(format string, a ...any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.errs = append(f.errs, fmt.Sprintf(format, a...))
+}
+
+func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
+	var req Request
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	step := 0
+	for _, m := range req.Messages {
+		if m.Role == "assistant" {
+			step++
+		}
+	}
+	tools := map[string]bool{}
+	for _, t := range req.Tools {
+		tools[t.Function.Name] = true
+	}
+	msg := Message{Role: "assistant"}
+	if step >= len(f.Steps) {
+		msg.Content = "Done."
+	} else {
+		name, args, text, err := f.render(f.Steps[step], tools, req.Messages)
+		if err != nil {
+			f.fail("step %d: %v", step+1, err)
+			msg.Content = "oracle error: " + err.Error()
+		} else if name == "" {
+			msg.Content = text
+		} else {
+			raw, _ := json.Marshal(args)
+			msg.ToolCalls = []ToolCall{{ID: fmt.Sprintf("fake_%d", step+1), Type: "function", Function: FunctionCall{Name: name, Arguments: string(raw)}}}
+		}
+	}
+	resp := map[string]any{
+		"id": fmt.Sprintf("fake-%d", step+1), "model": req.Model, "provider": "fake",
+		"choices": []any{map[string]any{"message": msg, "finish_reason": "tool_calls"}},
+		"usage":   map[string]any{"prompt_tokens": 0, "completion_tokens": 0, "cost": 0},
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (f *Fake) render(s catalog.Step, tools map[string]bool, msgs []Message) (string, map[string]any, string, error) {
+	tmpl := func(v string) (string, error) { return resolveRuntime(v, msgs) }
+	switch {
+	case s.Say != "":
+		return "", nil, s.Say, nil
+	case s.Shell != "":
+		cmd, err := tmpl(s.Shell)
+		if err != nil {
+			return "", nil, "", err
+		}
+		return "shell", map[string]any{"command": cmd}, "", nil
+	case s.ReadFile != "":
+		return need(tools, "read_file", map[string]any{"path": s.ReadFile})
+	case s.ListFiles != "":
+		return need(tools, "list_files", map[string]any{"path": s.ListFiles})
+	case s.Search != nil:
+		return need(tools, "search", s.Search)
+	case s.WriteFile != nil:
+		content := s.WriteFile.Content
+		if s.WriteFile.From != "" {
+			raw, err := os.ReadFile(f.FileRoot + "/" + s.WriteFile.From)
+			if err != nil {
+				return "", nil, "", err
+			}
+			content = string(raw)
+		}
+		return need(tools, "write_file", map[string]any{"path": s.WriteFile.Path, "content": content})
+	case s.EditFile != nil:
+		return need(tools, "edit_file", map[string]any{"path": s.EditFile.Path, "old_string": s.EditFile.Old, "new_string": s.EditFile.New})
+	case s.LoadSkill != "":
+		if !tools["load_skill"] {
+			// Arms without skills play the step as a harmless look at the
+			// repository, so later call ids stay the same on every arm.
+			return need(tools, "list_files", map[string]any{"path": "."})
+		}
+		return need(tools, "load_skill", map[string]any{"name": s.LoadSkill})
+	case s.AskUser != "":
+		q, err := tmpl(s.AskUser)
+		if err != nil {
+			return "", nil, "", err
+		}
+		return need(tools, "ask_user", map[string]any{"question": q})
+	case s.Submit != nil:
+		for name := range tools {
+			if strings.HasPrefix(name, "submit_") {
+				args, err := resolveArgs(s.Submit, msgs)
+				return name, args, "", err
+			}
+		}
+		return "", nil, "", fmt.Errorf("no submit tool on this arm")
+	}
+	return "", nil, "", fmt.Errorf("empty oracle step")
+}
+
+func need(tools map[string]bool, name string, args map[string]any) (string, map[string]any, string, error) {
+	if !tools[name] {
+		return "", nil, "", fmt.Errorf("this arm has no %s tool", name)
+	}
+	return name, args, "", nil
+}
+
+var runtimeRe = regexp.MustCompile(`\{\{\s*((?:last|calls\.c\d+)(?:\.[^}\s]+)?)\s*\}\}`)
+
+// resolveRuntime fills {{last.x}} and {{calls.c03.x}} from the tool results
+// already in the conversation.
+func resolveRuntime(s string, msgs []Message) (string, error) {
+	var firstErr error
+	out := runtimeRe.ReplaceAllStringFunc(s, func(m string) string {
+		expr := runtimeRe.FindStringSubmatch(m)[1]
+		v, err := lookupRuntime(expr, msgs)
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+		return fmt.Sprint(v)
+	})
+	return out, firstErr
+}
+
+func resolveArgs(in map[string]any, msgs []Message) (map[string]any, error) {
+	out := map[string]any{}
+	var firstErr error
+	var walk func(v any) any
+	walk = func(v any) any {
+		switch t := v.(type) {
+		case string:
+			// A whole-string template keeps the looked-up value's type.
+			if m := runtimeRe.FindStringSubmatch(t); m != nil && m[0] == strings.TrimSpace(t) {
+				val, err := lookupRuntime(m[1], msgs)
+				if err != nil && firstErr == nil {
+					firstErr = err
+				}
+				return val
+			}
+			s, err := resolveRuntime(t, msgs)
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+			return s
+		case map[string]any:
+			m := map[string]any{}
+			for k, x := range t {
+				m[k] = walk(x)
+			}
+			return m
+		case []any:
+			l := make([]any, len(t))
+			for i, x := range t {
+				l[i] = walk(x)
+			}
+			return l
+		default:
+			return v
+		}
+	}
+	keys := make([]string, 0, len(in))
+	for k := range in {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		out[k] = walk(in[k])
+	}
+	return out, firstErr
+}
+
+func lookupRuntime(expr string, msgs []Message) (any, error) {
+	parts := strings.SplitN(expr, ".", 3)
+	var content string
+	var path string
+	switch parts[0] {
+	case "last":
+		for i := len(msgs) - 1; i >= 0; i-- {
+			if msgs[i].Role == "tool" {
+				content, _ = msgs[i].Content.(string)
+				break
+			}
+		}
+		if len(parts) > 1 {
+			path = strings.Join(parts[1:], ".")
+		}
+	case "calls":
+		if len(parts) < 2 {
+			return nil, fmt.Errorf("bad template %s", expr)
+		}
+		prefix := "[call " + parts[1] + "]"
+		for _, m := range msgs {
+			if s, ok := m.Content.(string); ok && m.Role == "tool" && strings.HasPrefix(s, prefix) {
+				content = s
+			}
+		}
+		if len(parts) > 2 {
+			path = parts[2]
+		}
+	}
+	if content == "" {
+		return nil, fmt.Errorf("template %s: no such tool result", expr)
+	}
+	body := stripToolFrame(content)
+	if path == "" {
+		return body, nil
+	}
+	var v any
+	if err := json.Unmarshal([]byte(firstJSON(body)), &v); err != nil {
+		return nil, fmt.Errorf("template %s: result is not JSON", expr)
+	}
+	for _, seg := range splitPath(path) {
+		switch t := v.(type) {
+		case map[string]any:
+			v = t[seg]
+		case []any:
+			i, err := strconv.Atoi(seg)
+			if err != nil || i < 0 || i >= len(t) {
+				return nil, fmt.Errorf("template %s: bad index %s", expr, seg)
+			}
+			v = t[i]
+		default:
+			return nil, fmt.Errorf("template %s: cannot index %T with %s", expr, v, seg)
+		}
+	}
+	if v == nil {
+		return nil, fmt.Errorf("template %s resolved to nothing", expr)
+	}
+	return v, nil
+}
+
+func splitPath(p string) []string {
+	p = strings.NewReplacer("[", ".", "]", "").Replace(p)
+	var out []string
+	for _, s := range strings.Split(p, ".") {
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func stripToolFrame(s string) string {
+	if i := strings.Index(s, "\n"); i >= 0 && strings.HasPrefix(s, "[call ") {
+		s = s[i+1:]
+	}
+	if i := strings.LastIndex(s, "\n[budget:"); i >= 0 {
+		s = s[:i]
+	}
+	return s
+}
+
+func firstJSON(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexAny(s, "{["); i > 0 {
+		s = s[i:]
+	}
+	if i := strings.Index(s, "\n[exit status"); i >= 0 {
+		s = s[:i]
+	}
+	return s
+}
