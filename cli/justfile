@@ -24,11 +24,29 @@ vulncheck:
     govulncheck ./...
 
 # Skill and MCP evals (test/evals). Manual only: none of these recipes is part
-# of check, test or default. See test/evals/README.md.
+# of check, test or default, and paid runs belong in the CLI Evals workflow.
+# See test/evals/README.md.
 
 # Free: harness tests plus every case's oracle trajectory, with the fake model.
 eval-harness:
     cd test/evals && go test ./... && go run ./cmd/twevals oracle --all
+
+# Free: the dispatch matrix and a live-price cost estimate.
+eval-plan *args:
+    cd test/evals && go run ./cmd/twevals plan {{args}}
+
+# Start a paid run in GitHub (you still approve the evals environment gate).
+eval-dispatch *args:
+    gh workflow run cli-evals.yml {{args}}
+
+# Paid, local, for harness development only: asks you to type yes on a
+# terminal, and refuses to run without one.
+eval-local *args:
+    cd test/evals && go run ./cmd/twevals run {{args}}
+
+# Boot and seed one case and keep it running for review in the dashboard.
+eval-env case:
+    cd test/evals && go run ./cmd/twevals env up {{case}}
 
 # Regenerate the published skill (skills/traceway/) from the canonical
 # knowledge chunks in pkg/mcpserver/knowledge.

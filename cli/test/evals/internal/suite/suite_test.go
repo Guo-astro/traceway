@@ -19,6 +19,7 @@ import (
 	"github.com/tracewayapp/traceway/cli/test/evals/internal/scenarios"
 	_ "github.com/tracewayapp/traceway/cli/test/evals/internal/scenarios/all"
 	"github.com/tracewayapp/traceway/cli/test/evals/internal/seed"
+	"github.com/tracewayapp/traceway/cli/test/evals/internal/tools"
 )
 
 func loadAll(t *testing.T) []*catalog.Case {
@@ -44,8 +45,11 @@ func TestCaseReferences(t *testing.T) {
 				t.Error(err)
 			}
 			seen[c.Seed] = true
-			if r := c.Workspace.Repo; r != "" && !exists(filepath.Join(root, "testdata", "repos", r)) {
+			if r := c.Workspace.Repo; r != "" && !exists(filepath.Join(root, "testdata", "repos", r)) && !exists(filepath.Join(root, "testdata", "setup-templates", r)) {
 				t.Errorf("fixture %s does not exist", r)
+			}
+			if cs := c.Expect.Code; cs != nil && cs.HiddenTests != "" && !exists(filepath.Join(root, "testdata", "hidden", cs.HiddenTests)) {
+				t.Errorf("hidden tests %s do not exist", cs.HiddenTests)
 			}
 			checkIDs := func(where string, ids ...string) {
 				for _, id := range ids {
@@ -58,11 +62,18 @@ func TestCaseReferences(t *testing.T) {
 				checkIDs("expect.answer.checklist_item", a.ChecklistItem)
 				checkIDs("expect.answer.any_of", a.AnyOf...)
 				checkIDs("expect.answer.not", a.Not...)
+				if a.Category != "" && !slices.Contains(tools.DebugCategories, a.Category) {
+					t.Errorf("category %q is not a debug category", a.Category)
+				}
 				if c.Suite == "perf" && a.ChecklistItem == "" && len(a.AnyOf) == 0 {
 					t.Error("perf answers need checklist_item or any_of")
 				}
 			}
-			for arm, steps := range map[string][]catalog.Step{"oracle": c.Oracle} {
+			byArm := map[string][]catalog.Step{"oracle": c.Oracle}
+			for arm, steps := range c.OracleByArm {
+				byArm["oracle_by_arm."+arm] = steps
+			}
+			for arm, steps := range byArm {
 				for i, s := range steps {
 					if s.Submit != nil {
 						item, _ := s.Submit["checklist_item"].(string)
@@ -74,11 +85,13 @@ func TestCaseReferences(t *testing.T) {
 				}
 			}
 			last := c.Oracle[len(c.Oracle)-1]
-			if last.Submit == nil {
-				t.Error("the oracle must end with submit")
+			if last.Submit == nil && last.Finish == nil {
+				t.Error("the oracle must end with submit or finish")
 			}
-			if len(c.Judge.Rubric) == 0 {
-				t.Error("perf cases need a judge rubric")
+			if c.Suite == "perf" || c.Suite == "debug" {
+				if len(c.Judge.Rubric) == 0 {
+					t.Error("perf and debug cases need a judge rubric")
+				}
 			}
 		})
 	}

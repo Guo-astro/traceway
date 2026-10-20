@@ -59,6 +59,7 @@ type Selection struct {
 	Suites string // comma-separated
 	Tags   string // comma-separated, all must match
 	Arms   string // comma-separated
+	Shard  string // one suite
 }
 
 // Unit is one (case, arm) pair; the runner multiplies it by models and runs.
@@ -101,6 +102,9 @@ func Select(cases []*Case, presets *Presets, sel Selection) ([]Unit, error) {
 			return nil, fmt.Errorf("unknown suite %q", s)
 		}
 	}
+	if sel.Shard != "" && !slices.Contains(Suites, sel.Shard) {
+		return nil, fmt.Errorf("unknown shard %q (shards are suites)", sel.Shard)
+	}
 
 	var out []Unit
 	matchedGlob := map[string]bool{}
@@ -121,6 +125,9 @@ func Select(cases []*Case, presets *Presets, sel Selection) ([]Unit, error) {
 			}
 		}
 		if len(suites) > 0 && !slices.Contains(suites, c.Suite) {
+			continue
+		}
+		if sel.Shard != "" && c.Suite != sel.Shard {
 			continue
 		}
 		if !hasAll(c, tags) {

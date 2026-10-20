@@ -26,3 +26,37 @@ func TestInvokeMatchesPrompt(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateRejectsCasesTheHarnessCannotRun: arms the suite cannot run,
+// unknown hook actions, setup values the runner does not know, and a debug
+// answer that checks nothing.
+func TestValidateRejectsCasesTheHarnessCannotRun(t *testing.T) {
+	base := func() *Case {
+		return &Case{ID: "debug-x", Suite: "debug", Seed: "debug/x", Arms: []string{ArmCLISkill}, Prompt: "Fix it.",
+			Oracle: []Step{{Shell: "true"}}, Expect: Expect{Answer: &Answer{Category: "logic"}}, Distractor: "x"}
+	}
+	if err := base().Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]struct {
+		edit func(*Case)
+		want string
+	}{
+		"setup arm":    {func(c *Case) { c.Arms = []string{ArmCLISetupSkill} }, "does not run the debug suite"},
+		"hook action":  {func(c *Case) { c.Hooks = []Hook{{Action: "edit_postmortem"}} }, "unknown action"},
+		"empty answer": {func(c *Case) { c.Expect.Answer = &Answer{} }, "need expect.answer.category"},
+		"setup token": {func(c *Case) {
+			c.ID, c.Suite, c.Arms = "setup-x", "setup", []string{ArmCLISetupSkill}
+			c.Expect = Expect{State: []StateAssert{{Kind: "file"}}}
+			c.Setup = &SetupSpec{Token: "write"}
+		}, "setup.token must be"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cs := base()
+			c.edit(cs)
+			if err := cs.Validate(); err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("want an error containing %q, got %v", c.want, err)
+			}
+		})
+	}
+}

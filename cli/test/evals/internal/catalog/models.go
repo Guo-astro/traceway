@@ -30,10 +30,11 @@ type Model struct {
 	// MaxTokensPerTurn caps one completion.
 	MaxTokensPerTurn int      `yaml:"max_tokens_per_turn"`
 	Temperature      *float64 `yaml:"temperature"`
-	// Estimate is the per-run token envelope for estimating a paid run's
-	// cost. The oracle harness does not read it.
+	// Estimate is the per-run token envelope used by the preflight until
+	// baseline.json carries measured averages.
 	Estimate Estimate `yaml:"estimate"`
-	// FallbackPrice is USD per million tokens, for the same estimate.
+	// FallbackPrice (USD per million tokens) is used when the live price
+	// list cannot be fetched. The preflight says when it fell back.
 	FallbackPrice Price `yaml:"fallback_price"`
 }
 

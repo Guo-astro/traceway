@@ -3,7 +3,7 @@ suite: perf
 title: Android checkout crashes with socket timeouts while the checkout API waits on row locks
 tags: [cross-surface, android, kotlin, java, database]
 seed: perf/xs-android-timeouts
-arms: [cli+skill, cli-noskill]
+arms: [cli+skill, cli-noskill, mcp]
 invoke: natural
 distractor: An app bug. The crash is an uncaught java.net.SocketTimeoutException from CheckoutRepository (OkHttp's 10s read timeout, no catch in the view model), so catching it or raising the timeout looks like the fix. But each crash's network action is POST /api/checkout giving up at 10s, and on commerce-api that endpoint's p95 went from under a second to about 7s when the sale started; the time is inside update inventory (queued on the sale item's row lock, which every checkout holds through its payment call), not before the first query (no pool wait) and not in the payment call itself, and deadlock errors appear in the same hours.
 workspace: {repo: shop-android-and-api}

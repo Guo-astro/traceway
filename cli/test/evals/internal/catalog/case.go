@@ -17,16 +17,26 @@ import (
 )
 
 // Suites, in report order.
-var Suites = []string{"perf"}
+var Suites = []string{"perf", "debug", "write", "setup"}
 
 // Arms. An arm fixes the surface the agent works through and what it is given.
 const (
-	ArmCLISkill   = "cli+skill"   // traceway CLI in the shell, traceway skill available
-	ArmCLINoSkill = "cli-noskill" // traceway CLI in the shell, no skills (baseline)
+	ArmCLISkill      = "cli+skill"       // traceway CLI in the shell, traceway skill available
+	ArmCLINoSkill    = "cli-noskill"     // traceway CLI in the shell, no skills (baseline)
+	ArmMCP           = "mcp"             // /mcp tools, server instructions, no traceway CLI
+	ArmCLIWriteSkill = "cli-write+skill" // traceway-write CLI, traceway-write skill
+	ArmMCPWrite      = "mcp-write"       // /mcp/write tools
+	ArmCLISetupSkill = "cli+setup-skill" // container shell, traceway-setup skill
 )
 
 // AllArms lists every arm the runner knows.
-var AllArms = []string{ArmCLISkill, ArmCLINoSkill}
+var AllArms = []string{ArmCLISkill, ArmCLINoSkill, ArmMCP, ArmCLIWriteSkill, ArmMCPWrite, ArmCLISetupSkill}
+
+// IsMCPArm reports whether the arm talks to Traceway through MCP tools.
+func IsMCPArm(arm string) bool { return arm == ArmMCP || arm == ArmMCPWrite }
+
+// IsWriteArm reports whether the arm carries a write-capable surface.
+func IsWriteArm(arm string) bool { return arm == ArmCLIWriteSkill || arm == ArmMCPWrite }
 
 // Case is one eval scenario. Strings in Prompt, Expect, Oracle and Hooks may
 // contain {{seed.x}} / {{env.x}} placeholders, resolved after seeding.
@@ -44,6 +54,10 @@ type Case struct {
 	Prompt      string            `yaml:"prompt"`
 	Budget      Budget            `yaml:"budget"`
 	User        []UserRule        `yaml:"user"`
+	Credential  Credential        `yaml:"credential"`
+	AgentAccess *bool             `yaml:"agent_access"`
+	Setup       *SetupSpec        `yaml:"setup"`
+	Hooks       []Hook            `yaml:"hooks"`
 	Expect      Expect            `yaml:"expect"`
 	Judge       JudgeSpec         `yaml:"judge"`
 	Oracle      []Step            `yaml:"oracle"`
@@ -93,11 +107,63 @@ type UserRule struct {
 	Once bool `yaml:"once"`
 }
 
+// Credential picks the identity a write-suite run acts as.
+type Credential struct {
+	Scope  string `yaml:"scope"`  // write (default on write arms) | read
+	Member string `yaml:"member"` // admin (default) | user | readonly
+}
+
+// SetupSpec configures a setup-suite case.
+type SetupSpec struct {
+	// Path names the setup skill's path the case exercises, fast or plan.
+	// The harness does not read it; Token and ApproveDrafts set the run up.
+	Path string `yaml:"path"`
+	// Token is what the prompt hands the agent: ingest | setup.
+	Token string `yaml:"token"`
+	// ApproveDrafts makes the harness approve every pending setup draft.
+	ApproveDrafts bool `yaml:"approve_drafts"`
+	// Env is the container environment of the agent's shell and of the
+	// verify step. Values: "@token:<project>" (that project's ingest
+	// token), "@url" (the instance), "@port" (a free port for the app),
+	// or a literal.
+	Env map[string]string `yaml:"env"`
+	// Verify is what the harness does after the agent finishes: build and
+	// start the app against the backend and hit its routes, so state
+	// assertions can check that telemetry arrived.
+	Verify *SetupVerify `yaml:"verify"`
+}
+
+// SetupVerify builds and starts the instrumented app.
+type SetupVerify struct {
+	Dir   string   `yaml:"dir"`
+	Build string   `yaml:"build"`
+	Start string   `yaml:"start"`
+	Hit   []string `yaml:"hit"`
+	// EnvFiles are sourced (if present) before start, so env files the
+	// agent wrote are honored.
+	EnvFiles []string `yaml:"env_files"`
+	Wait     Duration `yaml:"wait"`
+}
+
+// HookActions are the actions a hook may name (runner/hooks.go).
+var HookActions = []string{"edit_post_mortem", "stub_healthy", "stub_unhealthy", "sleep", "approve_setup_draft"}
+
+// Hook is a harness action triggered after a matching agent call.
+type Hook struct {
+	After  CallMatcher    `yaml:"after"`
+	Action string         `yaml:"action"`
+	Args   map[string]any `yaml:"args"`
+	// Times bounds how often the hook fires (default 1).
+	Times int `yaml:"times"`
+}
+
 // Expect is everything the deterministic graders check.
 type Expect struct {
-	Answer    *Answer     `yaml:"answer"`
-	Grounding []string    `yaml:"grounding"`
-	Calls     *Trajectory `yaml:"calls"`
+	Answer    *Answer       `yaml:"answer"`
+	Grounding []string      `yaml:"grounding"`
+	Calls     *Trajectory   `yaml:"calls"`
+	State     []StateAssert `yaml:"state"`
+	Code      *CodeSpec     `yaml:"code"`
 	// Report holds regexps the final report text must (or must not) match.
 	Report *ReportSpec `yaml:"report"`
 }
@@ -108,13 +174,21 @@ type ReportSpec struct {
 	NotContains []string `yaml:"not_contains"`
 }
 
-// Answer is the expected structured answer to submit_perf_diagnosis.
+// Answer is the expected structured answer. Perf fields apply to
+// submit_perf_diagnosis, debug fields to submit_debug_diagnosis.
 type Answer struct {
+	// perf
 	ChecklistItem string   `yaml:"checklist_item"`
 	AnyOf         []string `yaml:"any_of"`
 	Not           []string `yaml:"not"`
 	Locus         *Locus   `yaml:"locus"`
 	Onset         *Onset   `yaml:"onset"`
+	// debug
+	IssueHash            string   `yaml:"issue_hash"`
+	OccurrenceID         string   `yaml:"occurrence_id"`
+	Category             string   `yaml:"category"`
+	Culprit              *Culprit `yaml:"culprit"`
+	NeedsInstrumentation *bool    `yaml:"needs_instrumentation"`
 	// MentionsAll lists regexps that must all match somewhere in the answer.
 	MentionsAll []string `yaml:"mentions_all"`
 }
@@ -131,6 +205,15 @@ type Locus struct {
 type Onset struct {
 	At               string `yaml:"at"`
 	ToleranceMinutes int    `yaml:"tolerance_minutes"`
+}
+
+// Culprit is the expected root-cause location.
+type Culprit struct {
+	File   string `yaml:"file"`
+	Symbol string `yaml:"symbol"`
+	Line   int    `yaml:"line"`
+	// LineTolerance defaults to 3.
+	LineTolerance int `yaml:"line_tolerance"`
 }
 
 // Trajectory is the tool-call DSL.
@@ -152,6 +235,130 @@ type CallMatcher struct {
 	OK    *bool          `yaml:"ok"`
 }
 
+// StateAssert is one post-run assertion against the backend or workspace.
+// Kind selects which fields apply; see grade/state.go.
+type StateAssert struct {
+	Kind string `yaml:"kind"`
+	// Common addressing.
+	ID       string `yaml:"id"`
+	Endpoint string `yaml:"endpoint"`
+	Path     string `yaml:"path"`
+	// Expected values.
+	Status         string            `yaml:"status"`
+	Enabled        *bool             `yaml:"enabled"`
+	SnoozedMinutes *Range            `yaml:"snoozed_minutes"`
+	Snoozed        *bool             `yaml:"snoozed"`
+	Equals         []string          `yaml:"equals"`
+	Among          []string          `yaml:"among"`
+	Count          *Range            `yaml:"count"`
+	OffsetMs       *Range            `yaml:"offset_ms"`
+	Reason         string            `yaml:"reason"`
+	Contains       []string          `yaml:"contains"`
+	NotContains    []string          `yaml:"not_contains"`
+	Title          string            `yaml:"title"`
+	Tags           []string          `yaml:"tags"`
+	IncidentID     string            `yaml:"incident_id"`
+	Exists         *bool             `yaml:"exists"`
+	Route          string            `yaml:"route"`
+	HTTPStatus     *Range            `yaml:"http_status"`
+	Projects       []string          `yaml:"projects"`
+	Project        string            `yaml:"project"`
+	Frameworks     map[string]string `yaml:"frameworks"`
+	Extra          map[string]any    `yaml:"extra"`
+}
+
+// Range is an inclusive numeric interval; a scalar YAML value sets both ends.
+type Range struct {
+	Min *float64 `yaml:"min"`
+	Max *float64 `yaml:"max"`
+}
+
+// UnmarshalYAML accepts `5` as {min: 5, max: 5}. A bound that is still a
+// {{template}} (the case is loaded before seeding) is left unset; Resolve
+// decodes the case again after filling it in.
+func (r *Range) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.ScalarNode && strings.Contains(n.Value, "{{") {
+		return nil
+	}
+	if n.Kind == yaml.MappingNode {
+		var raw map[string]yaml.Node
+		if err := n.Decode(&raw); err != nil {
+			return err
+		}
+		for k, v := range raw {
+			if v.Kind == yaml.ScalarNode && strings.Contains(v.Value, "{{") {
+				continue
+			}
+			var f float64
+			if err := v.Decode(&f); err != nil {
+				return fmt.Errorf("range %s: %w", k, err)
+			}
+			switch k {
+			case "min":
+				r.Min = &f
+			case "max":
+				r.Max = &f
+			default:
+				return fmt.Errorf("range: unknown key %q", k)
+			}
+		}
+		return nil
+	}
+	if n.Kind == yaml.ScalarNode {
+		var v float64
+		if err := n.Decode(&v); err != nil {
+			return err
+		}
+		r.Min, r.Max = &v, &v
+		return nil
+	}
+	type plain Range
+	return n.Decode((*plain)(r))
+}
+
+// Contains reports whether v lies in the range.
+func (r *Range) Contains(v float64) bool {
+	if r == nil {
+		return true
+	}
+	if r.Min != nil && v < *r.Min {
+		return false
+	}
+	if r.Max != nil && v > *r.Max {
+		return false
+	}
+	return true
+}
+
+func (r *Range) String() string {
+	if r == nil {
+		return "any"
+	}
+	lo, hi := "-inf", "+inf"
+	if r.Min != nil {
+		lo = fmt.Sprint(*r.Min)
+	}
+	if r.Max != nil {
+		hi = fmt.Sprint(*r.Max)
+	}
+	return "[" + lo + ", " + hi + "]"
+}
+
+// CodeSpec verifies a code change with hidden tests.
+type CodeSpec struct {
+	HiddenTests string   `yaml:"hidden_tests"` // testdata/hidden/<name>
+	Command     string   `yaml:"command"`
+	Gating      bool     `yaml:"gating"`
+	Timeout     Duration `yaml:"timeout"`
+	// TouchesCulprit requires the diff to change the culprit file.
+	TouchesCulprit bool `yaml:"touches_culprit"`
+	// MustChange / MustNotChange are path globs checked against the diff.
+	MustChange    []string `yaml:"must_change"`
+	MustNotChange []string `yaml:"must_not_change"`
+	// Static marks a fixture that cannot run here; only the diff is graded.
+	Static bool `yaml:"static"`
+}
+
 // JudgeSpec is the LLM judge's rubric. Expected is shown to the judge only.
 type JudgeSpec struct {
 	Rubric   []string `yaml:"rubric"`
@@ -161,6 +368,8 @@ type JudgeSpec struct {
 // Step is one oracle action, played by the fake model.
 type Step struct {
 	Shell     string         `yaml:"shell"`
+	Op        string         `yaml:"op"`
+	Args      map[string]any `yaml:"args"`
 	Stdin     string         `yaml:"stdin"`
 	ReadFile  string         `yaml:"read_file"`
 	ListFiles string         `yaml:"list_files"`
@@ -169,7 +378,9 @@ type Step struct {
 	EditFile  *EditStep      `yaml:"edit_file"`
 	LoadSkill string         `yaml:"load_skill"`
 	AskUser   string         `yaml:"ask_user"`
+	Resource  string         `yaml:"read_resource"`
 	Submit    map[string]any `yaml:"submit"`
+	Finish    map[string]any `yaml:"finish"`
 	Say       string         `yaml:"say"`
 }
 
@@ -209,6 +420,17 @@ func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
 func (d Duration) D() time.Duration { return time.Duration(d) }
 
 var idRe = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)+$`)
+
+// suiteArms are the arms a suite can run: write cases need a write surface,
+// and the setup arm (the container shell) belongs to the setup suite alone.
+// perf and debug take any other arm (a debug case may check that an agent
+// with write access writes nothing).
+var suiteArms = map[string][]string{
+	"perf":  {ArmCLISkill, ArmCLINoSkill, ArmMCP, ArmCLIWriteSkill, ArmMCPWrite},
+	"debug": {ArmCLISkill, ArmCLINoSkill, ArmMCP, ArmCLIWriteSkill, ArmMCPWrite},
+	"write": {ArmCLIWriteSkill, ArmMCPWrite},
+	"setup": {ArmCLISetupSkill},
+}
 
 // Validate checks a case for structural errors that YAML decoding cannot.
 func (c *Case) Validate() error {
@@ -257,10 +479,41 @@ func (c *Case) Validate() error {
 			add("oracle_by_arm names arm %q that the case does not run", arm)
 		}
 	}
-	if c.Expect.Answer == nil {
-		add("%s cases need expect.answer", c.Suite)
+	if c.Suite == "perf" || c.Suite == "debug" {
+		if c.Expect.Answer == nil {
+			add("%s cases need expect.answer", c.Suite)
+		}
 	}
-	if c.Distractor == "" && !slices.Contains(c.Tags, "control") {
+	if (c.Suite == "write" || c.Suite == "setup") && len(c.Expect.State) == 0 {
+		add("%s cases need expect.state", c.Suite)
+	}
+	if c.Suite == "setup" && c.Setup == nil {
+		add("setup cases need a setup block")
+	}
+	if c.Setup != nil {
+		if c.Setup.Path != "" && c.Setup.Path != "fast" && c.Setup.Path != "plan" {
+			add("setup.path must be fast or plan, got %q", c.Setup.Path)
+		}
+		if c.Setup.Token != "" && c.Setup.Token != "ingest" && c.Setup.Token != "setup" {
+			add("setup.token must be ingest or setup, got %q", c.Setup.Token)
+		}
+	}
+	for _, a := range c.Arms {
+		if ok := suiteArms[c.Suite]; ok != nil && !slices.Contains(ok, a) {
+			add("arm %q does not run the %s suite (its arms: %v)", a, c.Suite, ok)
+		}
+	}
+	if c.Suite == "debug" && c.Expect.Answer != nil {
+		if ans := c.Expect.Answer; ans.Category == "" && ans.IssueHash == "" && ans.Culprit == nil {
+			add("debug cases need expect.answer.category, issue_hash or culprit")
+		}
+	}
+	for i, h := range c.Hooks {
+		if !slices.Contains(HookActions, h.Action) {
+			add("hooks[%d]: unknown action %q (one of %v)", i, h.Action, HookActions)
+		}
+	}
+	if c.Suite != "setup" && c.Distractor == "" && !slices.Contains(c.Tags, "control") {
 		add("distractor is required (or tag the case control)")
 	}
 	if len(errs) > 0 {

@@ -3,7 +3,7 @@ suite: perf
 title: iOS launch watchdog kills while the config endpoint waits for database connections
 tags: [cross-surface, ios, swift, go, database]
 seed: perf/xs-ios-watchdog
-arms: [cli+skill, cli-noskill]
+arms: [cli+skill, cli-noskill, mcp]
 invoke: natural
 distractor: A pure client bug. The crash is a launch watchdog termination (0x8badf00d) with the main thread blocked in ConfigClient.fetchBlocking, a synchronous GET /api/config with a 30s timeout inside didFinishLaunching, and that is a real client defect. But it has shipped for three weeks without crashing; the kills started with two waves of launches today, when GET /api/config on mobile-api began taking 20-30s, all of it waiting before the first query for one of the API's 8 database connections (the feature-flag queries themselves take a few milliseconds), with POST /api/devices and the feed queued in the same waves.
 workspace: {repo: shop-ios-and-api}

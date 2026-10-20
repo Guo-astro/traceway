@@ -1,4 +1,6 @@
-// Package report turns run results into results.json and summary.md.
+// Package report turns run results into results.json and summary.md,
+// compares them with the committed baseline, and estimates cost from live
+// OpenRouter prices.
 package report
 
 import (
@@ -34,8 +36,11 @@ type Header struct {
 	Command        string            `json:"command"`
 	Started        time.Time         `json:"started"`
 	Finished       time.Time         `json:"finished"`
-	Oracle         bool              `json:"oracle,omitempty"`
-	CI             map[string]string `json:"ci,omitempty"`
+	MaxCostUSD     float64           `json:"maxCostUsd"`
+	// ReplacedSpendUSD is what the runs a resume ran again had cost.
+	ReplacedSpendUSD float64           `json:"replacedSpendUsd,omitempty"`
+	Oracle           bool              `json:"oracle,omitempty"`
+	CI               map[string]string `json:"ci,omitempty"`
 }
 
 // Results is results.json.
@@ -146,4 +151,43 @@ func Load(dir string) (*Results, error) {
 		return nil, fmt.Errorf("%s: no results.json and no run results", dir)
 	}
 	return r, nil
+}
+
+// Merge combines shard results under one header. A run that appears in
+// two parts (a merged directory passed with its own shards, or the same shard
+// twice) is an error, and parts from different commits, models or binaries
+// are reported in the returned notes.
+func Merge(parts []*Results) (*Results, []string, error) {
+	out := &Results{}
+	total, replaced := 0.0, 0.0
+	from := map[string]int{}
+	var notes []string
+	for i, p := range parts {
+		if i == 0 {
+			out.Header = p.Header
+		} else {
+			h := out.Header
+			for _, d := range [][3]string{{"commit", h.GitSHA, p.Header.GitSHA}, {"models", h.ModelsDigest, p.Header.ModelsDigest}, {"binaries", h.BinariesHash, p.Header.BinariesHash}} {
+				if d[1] != d[2] {
+					notes = append(notes, fmt.Sprintf("part %d (%s) has a different %s than part 1 (%s): %q vs %q", i+1, p.Header.RunID, d[0], h.RunID, d[2], d[1]))
+				}
+			}
+		}
+		total += p.Header.MaxCostUSD
+		replaced += p.Header.ReplacedSpendUSD
+		if p.Header.Finished.After(out.Header.Finished) {
+			out.Header.Finished = p.Header.Finished
+		}
+		for _, r := range p.Runs {
+			if j, ok := from[r.Key()]; ok {
+				return nil, nil, fmt.Errorf("run %s is in part %d and part %d: pass each shard once, and not a merged directory together with its shards", r.Key(), j+1, i+1)
+			}
+			from[r.Key()] = i
+		}
+		out.Runs = append(out.Runs, p.Runs...)
+	}
+	out.Header.MaxCostUSD = total
+	out.Header.ReplacedSpendUSD = replaced
+	sort.SliceStable(out.Runs, func(i, j int) bool { return out.Runs[i].Key() < out.Runs[j].Key() })
+	return out, notes, nil
 }

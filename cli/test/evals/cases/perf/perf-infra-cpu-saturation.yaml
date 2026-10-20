@@ -3,7 +3,7 @@ suite: perf
 title: Traffic tripled and every endpoint slowed down with the CPU pinned
 tags: [smoke, infrastructure, node]
 seed: perf/infra-cpu-saturation
-arms: [cli+skill, cli-noskill]
+arms: [cli+skill, cli-noskill, mcp]
 invoke: slash
 distractor: A code regression; but service.version never changed, the last commit is nine days old, and every endpoint got 2-4x slower at the same moment the request rate tripled, with CPU on both instances going from ~25% to ~95% at that time. The waterfalls show the same spans, just stretched, plus wait time between them; no new or longer query.
 workspace: {repo: commerce-api-node}

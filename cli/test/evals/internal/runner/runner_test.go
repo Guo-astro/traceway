@@ -27,7 +27,7 @@ func TestOracleNPlusOne(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	model := &catalog.Model{Key: "oracle", ID: "fake/oracle", Caching: "none"}
-	opt := Options{EvalsRoot: root, RepoRoot: repo, OutDir: t.TempDir(), Bins: bins, Models: []*catalog.Model{model}, Runs: 1, Jobs: 1}
+	opt := Options{EvalsRoot: root, RepoRoot: repo, OutDir: t.TempDir(), Bins: bins, Models: []*catalog.Model{model}, Runs: 1, Jobs: 1, Oracle: true}
 	res := Execute(ctx, opt, Jobs([]catalog.Unit{{Case: c, Arm: catalog.ArmCLISkill}}, opt.Models, 1))
 	if len(res) != 1 || res[0].Status != "pass" {
 		for _, r := range res {

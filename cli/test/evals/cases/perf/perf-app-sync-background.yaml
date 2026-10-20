@@ -3,7 +3,7 @@ suite: perf
 title: Generating a statement holds the request open while the PDF renders
 tags: [application, go]
 seed: perf/app-sync-background
-arms: [cli+skill, cli-noskill]
+arms: [cli+skill, cli-noskill, mcp]
 invoke: slash
 distractor: Host CPU jumps to ~80% whenever a statement renders, which reads like saturation, but average CPU is ~20%, the endpoint is just as slow when the host is otherwise idle, and every other endpoint on the host stays fast. The spike is the render itself, not the cause of the latency.
 workspace: {repo: statements-api-go}

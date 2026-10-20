@@ -23,6 +23,12 @@ type Config struct {
 	Prompt     string
 	SubmitTool string
 	Budget     catalog.Budget
+	// Hold is this run's reservation of --max-cost-usd (nil = no cap); its
+	// spending goes there, and to Ledger when there is no hold.
+	Hold   *Hold
+	Ledger *Ledger
+	// Price estimates cost when the provider reports none.
+	Price      catalog.Price
 	Transcript *Transcript
 	// AfterCall runs harness hooks after each executed call.
 	AfterCall func(ctx context.Context, c *record.Call)
@@ -38,6 +44,7 @@ const (
 	StopBudget    = "budget_exhausted"
 	StopNoSubmit  = "no_submit"
 	StopInfra     = "infra_error"
+	StopCeiling   = "cost_ceiling"
 )
 
 // Run drives the model until it submits, a budget runs out, or it stops
@@ -65,6 +72,7 @@ func Run(ctx context.Context, cfg Config) *record.Run {
 	nudged := false
 	callN := 0
 	outputTokens := 0
+	lastTurnUSD := 0.0
 	providers := map[string]bool{}
 	finish := func(reason, detail string) *record.Run {
 		run.StopReason, run.StopDetail = reason, detail
@@ -85,6 +93,18 @@ func Run(ctx context.Context, cfg Config) *record.Run {
 	for {
 		if run.Turns >= budget.MaxTurns {
 			return finish(StopBudget, fmt.Sprintf("max_turns %d reached", budget.MaxTurns))
+		}
+		// The dispatch ceiling stops new runs from starting (runner.Execute);
+		// a run already in flight finishes, bounded by its own cap.
+		if run.Turns == 0 && cfg.Ledger.Exhausted() {
+			return finish(StopCeiling, "the dispatch's --max-cost-usd ceiling was reached")
+		}
+		// The next call costs at least about as much as the last one (the
+		// context only grows), so stop before it would cross the run's share.
+		// This is the harness's cap, not the model's budget: the run is
+		// recorded as cost_ceiling, left out of pass rates and resumable.
+		if h := cfg.Hold; h != nil && h.Cap > 0 && run.Turns > 0 && h.Spent()+lastTurnUSD > h.Cap {
+			return finish(StopCeiling, fmt.Sprintf("run cost cap $%.2f reached (spent $%.4f, the last call cost $%.4f)", h.Cap, h.Spent(), lastTurnUSD))
 		}
 		run.Turns++
 		req := &Request{
@@ -111,8 +131,14 @@ func Run(ctx context.Context, cfg Config) *record.Run {
 			}
 			return finish(StopInfra, err.Error())
 		}
-		u := usageOf(resp)
+		u := UsageOf(resp, cfg.Price)
 		run.Usage.Add(u)
+		lastTurnUSD = u.CostUSD
+		if cfg.Hold != nil {
+			cfg.Hold.Add(cfg.Model.Key, u.CostUSD)
+		} else {
+			cfg.Ledger.Add(cfg.Model.Key, u.CostUSD)
+		}
 		outputTokens += u.OutputTokens - u.ReasoningTokens
 		if resp.Provider != "" {
 			providers[resp.Provider] = true
@@ -197,8 +223,10 @@ func nonEmpty(s string) string {
 	return s
 }
 
-func usageOf(r *Response) record.Usage {
-	return record.Usage{
+// UsageOf reads a response's usage, estimating its cost from p when the
+// provider reported none.
+func UsageOf(r *Response, p catalog.Price) record.Usage {
+	u := record.Usage{
 		InputTokens:      r.Usage.PromptTokens,
 		CachedTokens:     r.Usage.PromptTokensDetails.CachedTokens,
 		CacheWriteTokens: r.Usage.PromptTokensDetails.CacheWriteTokens,
@@ -206,4 +234,9 @@ func usageOf(r *Response) record.Usage {
 		ReasoningTokens:  r.Usage.CompletionTokensDetails.ReasoningTokens,
 		CostUSD:          r.Usage.Cost,
 	}
+	if u.CostUSD == 0 && (u.InputTokens > 0 || u.OutputTokens > 0) && p.Prompt > 0 {
+		uncached := u.InputTokens - u.CachedTokens - u.CacheWriteTokens
+		u.CostUSD = (float64(uncached)*p.Prompt + float64(u.CachedTokens)*p.CacheRead + float64(u.CacheWriteTokens)*p.CacheWrite + float64(u.OutputTokens)*p.Completion) / 1e6
+	}
+	return u
 }

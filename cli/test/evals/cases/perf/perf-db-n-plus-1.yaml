@@ -3,7 +3,7 @@ suite: perf
 title: Orders endpoint slows down as customers accumulate orders
 tags: [smoke, database, go]
 seed: perf/db-n-plus-1
-arms: [cli+skill, cli-noskill]
+arms: [cli+skill, cli-noskill, mcp]
 invoke: slash
 distractor: The orders query selects every column (over-fetching), but it takes 3-6ms; CPU stays flat and nothing was deployed in the window.
 workspace: {repo: orders-api-go}

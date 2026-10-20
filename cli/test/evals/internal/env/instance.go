@@ -14,11 +14,11 @@ type Instance struct {
 	Dir     string
 }
 
-// AdminEmail and AdminPassword are the owner credentials of every instance.
-const (
-	AdminEmail    = "owner@example.com"
-	AdminPassword = "eval-owner-password"
-)
+// AdminEmail is the owner's login on every instance. The password is random
+// per instance (Admin.Password): the setup suite's container shares the host
+// network, so a fixed password would let an agent sign in as the owner of
+// its own or another run's backend.
+const AdminEmail = "owner@example.com"
 
 // NewInstance boots a backend under dir/backend, registers the owner and
 // organization, and starts a healthy stub.
@@ -27,7 +27,7 @@ func NewInstance(ctx context.Context, bins *Binaries, dir string) (*Instance, er
 	if err != nil {
 		return nil, err
 	}
-	a, err := Register(ctx, b, AdminEmail, AdminPassword, "Acme")
+	a, err := Register(ctx, b, AdminEmail, "owner-"+randomHex(12), "Acme")
 	if err != nil {
 		b.Stop()
 		return nil, fmt.Errorf("register: %w", err)

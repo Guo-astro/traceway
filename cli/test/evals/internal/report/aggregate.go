@@ -54,9 +54,11 @@ type Aggregates struct {
 	// Suites is keyed "suite|model|arm".
 	Suites      map[string]*Rate  `json:"suites"`
 	SkillUplift []Delta           `json:"skillUplift"`
+	CLIvsMCP    []Delta           `json:"cliVsMcp"`
 	Models      []Delta           `json:"models"`
 	Cost        map[string]*Costs `json:"cost"` // by model
 	SpendUSD    float64           `json:"spendUsd"`
+	JudgeUSD    float64           `json:"judgeUsd"`
 	Statuses    map[string]int    `json:"statuses"`
 	TopFailing  []GraderCount     `json:"topFailingGraders"`
 }
@@ -67,10 +69,10 @@ type GraderCount struct {
 	Count  int    `json:"count"`
 }
 
-// Counted reports whether a run counts toward pass rates: infra errors are
-// excluded, budget exhaustion is a failure.
+// Counted reports whether a run counts toward pass rates: infra errors and
+// cost-ceiling skips are excluded, budget exhaustion is a failure.
 func Counted(r *runner.Result) bool {
-	return r.Status != "infra_error"
+	return r.Status != "infra_error" && r.Status != "cost_ceiling"
 }
 
 // Aggregate computes pass rates and deltas.
@@ -80,7 +82,8 @@ func Aggregate(runs []*runner.Result) Aggregates {
 	cacheIn, cacheHit := map[string]int{}, map[string]int{}
 	for _, r := range runs {
 		a.Statuses[r.Status]++
-		a.SpendUSD += r.Metrics.CostUSD
+		a.SpendUSD += r.Metrics.CostUSD + r.Metrics.JudgeCostUSD
+		a.JudgeUSD += r.Metrics.JudgeCostUSD
 		c := a.Cost[r.Model]
 		if c == nil {
 			c = &Costs{}
@@ -173,6 +176,12 @@ func Aggregate(runs []*runner.Result) Aggregates {
 		for _, m := range modelList {
 			if d, ok := pair(s, m, catalog.ArmCLISkill, catalog.ArmCLINoSkill); ok {
 				a.SkillUplift = append(a.SkillUplift, d)
+			}
+			if d, ok := pair(s, m, catalog.ArmCLISkill, catalog.ArmMCP); ok {
+				a.CLIvsMCP = append(a.CLIvsMCP, d)
+			}
+			if d, ok := pair(s, m, catalog.ArmCLIWriteSkill, catalog.ArmMCPWrite); ok {
+				a.CLIvsMCP = append(a.CLIvsMCP, d)
 			}
 		}
 		// Model vs model on each arm, over the cases both ran.

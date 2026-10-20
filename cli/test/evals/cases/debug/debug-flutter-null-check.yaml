@@ -3,7 +3,7 @@ suite: debug
 title: Flutter product pages fail with a null check on listings without photos
 tags: [mobile, flutter, dart]
 seed: debug/flutter-null-check
-arms: [cli+skill, cli-noskill]
+arms: [cli+skill, cli-noskill, mcp]
 invoke: slash
 distractor: >-
   No app release lines up with the crash (it hits 4.2.1 and 4.3.0 alike, and 4.3.0 shipped nine days ago); a steady
@@ -36,6 +36,7 @@ expect:
     max_identical_repeats: 2
   code:
     static: true
+    gating: true
     touches_culprit: true
     must_change: [lib/features/product/widgets/product_hero_carousel.dart]
     must_not_change: [lib/core/api_client.dart]

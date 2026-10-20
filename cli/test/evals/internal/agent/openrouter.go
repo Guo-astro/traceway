@@ -1,6 +1,7 @@
-// Package agent drives a model through the eval: a Chat Completions client,
-// the tool-calling loop with budgets, prompt caching, transcripts, and the
-// fake model that plays oracle trajectories.
+// Package agent drives a model through the eval: an OpenRouter Chat
+// Completions client (the same code path for every model and the judge), the
+// tool-calling loop with budgets and the cost ledger, prompt caching,
+// transcripts, and the fake model that plays oracle trajectories.
 package agent
 
 import (
@@ -15,7 +16,12 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/tracewayapp/traceway/cli/test/evals/internal/guard"
 )
+
+// OpenRouterURL is the only remote endpoint the harness talks to.
+const OpenRouterURL = "https://openrouter.ai/api/v1"
 
 // Message is one Chat Completions message.
 type Message struct {
@@ -120,18 +126,31 @@ type Chatter interface {
 	Chat(ctx context.Context, req *Request) (*Response, error)
 }
 
-// Client talks Chat Completions to the fake model on loopback. A
-// non-loopback base URL is always refused: this harness makes no paid calls.
+// Client talks Chat Completions to OpenRouter (or to the fake model on
+// loopback). A non-loopback base URL is refused unless guard.Live() says a
+// paid run was authorized, which is never the case under go test.
 type Client struct {
 	BaseURL string
 	Key     string
 	HTTP    *http.Client
-	// Retries on 429/5xx/timeouts (default 5).
+	// Retries on 408/429/5xx/timeouts (default 5).
 	Retries int
 }
 
-// ErrNotAuthorized is returned for a request to a remote endpoint.
-var ErrNotAuthorized = errors.New("remote model calls are not supported: the harness only talks to the fake model on loopback")
+// ErrNotAuthorized is returned when a paid call was not unlocked.
+var ErrNotAuthorized = errors.New("paid model calls are locked: only `twevals run|resume` unlock them after the manual-run guard passes (never under go test)")
+
+// NewOpenRouter returns the real client. It fails unless the guard unlocked
+// paid calls.
+func NewOpenRouter(key string) (*Client, error) {
+	if !guard.Live() {
+		return nil, ErrNotAuthorized
+	}
+	if key == "" {
+		return nil, errors.New("OPENROUTER_API_KEY is not set")
+	}
+	return &Client{BaseURL: OpenRouterURL, Key: key, HTTP: &http.Client{Timeout: 5 * time.Minute}}, nil
+}
 
 func isLoopback(base string) bool {
 	u, err := url.Parse(base)
@@ -154,7 +173,7 @@ func (e *RetryableError) Unwrap() error { return e.Err }
 
 // Chat sends a request with retries and exponential backoff.
 func (c *Client) Chat(ctx context.Context, req *Request) (*Response, error) {
-	if !isLoopback(c.BaseURL) {
+	if !isLoopback(c.BaseURL) && !guard.Live() {
 		return nil, ErrNotAuthorized
 	}
 	retries := c.Retries
@@ -215,7 +234,7 @@ func (c *Client) once(ctx context.Context, req *Request) (*Response, error) {
 	if err != nil {
 		return nil, &RetryableError{err}
 	}
-	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode >= 500 {
 		return nil, &RetryableError{fmt.Errorf("openrouter HTTP %d: %s", resp.StatusCode, clip(raw))}
 	}
 	if resp.StatusCode != http.StatusOK {

@@ -234,10 +234,12 @@ If any of those vars is missing, the smoke tests skip cleanly rather than fail.
 
 ## Skill and MCP evals
 
-`test/evals` measures how well AI agents use Traceway through the skills,
-against a seeded hermetic backend. It is **manual only** and free: nothing
-triggers it, and it plays every case with a fake model. Run
-`just eval-harness` (unit tests plus every oracle trajectory). See
+`test/evals` measures how well AI agents use Traceway through the skills and
+the MCP servers, against a seeded hermetic backend. It is **manual only**:
+paid runs happen in the CLI Evals workflow, which a person dispatches and
+approves at the `evals` environment gate; nothing triggers it automatically.
+The free parts run locally: `just eval-harness` (unit tests plus every oracle
+trajectory, with a fake model) and `just eval-plan` (the cost estimate). See
 [`test/evals/README.md`](test/evals/README.md).
 
 ## Contributing

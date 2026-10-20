@@ -44,7 +44,7 @@ func Grounding(in *Input) *Verdict {
 				cited = append(cited, c)
 			}
 		}
-	} else if in.Case.Suite == "perf" {
+	} else if in.Case.Suite == "perf" || in.Case.Suite == "debug" {
 		v.fail("the submission cites no evidence")
 	}
 	for _, key := range in.Case.Expect.Grounding {

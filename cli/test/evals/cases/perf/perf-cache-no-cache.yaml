@@ -3,7 +3,7 @@ suite: perf
 title: The catalog endpoint keeps the database busy all day
 tags: [caching, node, react, multi-project, browser]
 seed: perf/cache-no-cache
-arms: [cli+skill, cli-noskill]
+arms: [cli+skill, cli-noskill, mcp]
 invoke: natural
 distractor: The catalog query is the long pole of every request (~45ms of ~55ms over ~1200 rows), which reads like a slow query, but it is steady and unremarkable per request; the load is volume times repetition, ~9000 identical builds a day of a catalog that changes twice a day, because the cache never hits.
 workspace: {repo: shop-catalog}

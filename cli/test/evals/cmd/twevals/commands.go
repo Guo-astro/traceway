@@ -148,7 +148,8 @@ func cmdOracle(ctx context.Context, args []string) error {
 	}
 	oracleModel := &catalog.Model{Key: "oracle", ID: "fake/oracle", Caching: "none"}
 	opt := runner.Options{EvalsRoot: ws.root, RepoRoot: ws.repo, OutDir: outDir, Bins: bins, Models: []*catalog.Model{oracleModel},
-		Runs: 1, Jobs: *jobs, Keep: *keep, Log: os.Stderr}
+		Runs: 1, Jobs: *jobs, Keep: *keep, Oracle: true, Log: os.Stderr}
+	opt.SandboxImage = sandboxImage(ctx, ws, units)
 	header := report.NewHeader(ws.repo, filepath.Base(outDir), ws.models, bins.Hash, os.Args)
 	header.Oracle = true
 	header.Models = map[string]string{oracleModel.Key: oracleModel.ID}

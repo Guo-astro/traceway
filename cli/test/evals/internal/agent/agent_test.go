@@ -142,6 +142,23 @@ func TestLoopBudgets(t *testing.T) {
 	if rejected == 0 {
 		t.Fatal("calls past max_tool_calls must be refused")
 	}
+
+	c := cfg(&scripted{resps: []*Response{toolResp("echo", `{}`, 2), toolResp("echo", `{}`, 2)}})
+	ledger := NewLedger(10)
+	c.Hold = ledger.Reserve(3)
+	run = Run(context.Background(), c)
+	if run.StopReason != StopCeiling || !strings.Contains(run.StopDetail, "cost cap") {
+		t.Fatalf("run cap: %s %s", run.StopReason, run.StopDetail)
+	}
+	if run.Turns != 1 || ledger.Spent() != 2 {
+		t.Fatalf("the run must stop before a second $2 call would cross its $3 cap: %d turns, $%v", run.Turns, ledger.Spent())
+	}
+	c = cfg(&scripted{resps: []*Response{toolResp("echo", `{}`, 2)}})
+	c.Ledger = NewLedger(1)
+	c.Ledger.Add("other", 1)
+	if run := Run(context.Background(), c); run.StopReason != StopCeiling {
+		t.Fatalf("ceiling: %s", run.StopReason)
+	}
 }
 
 func TestUnknownToolIsAnError(t *testing.T) {
@@ -152,8 +169,11 @@ func TestUnknownToolIsAnError(t *testing.T) {
 	}
 }
 
-func TestClientRefusesRemote(t *testing.T) {
-	c := &Client{BaseURL: "https://openrouter.ai/api/v1", Key: "sk-or-test"}
+func TestClientRefusesRemoteWithoutGuard(t *testing.T) {
+	if _, err := NewOpenRouter("sk-or-test"); !errors.Is(err, ErrNotAuthorized) {
+		t.Fatalf("NewOpenRouter under go test = %v", err)
+	}
+	c := &Client{BaseURL: OpenRouterURL, Key: "sk-or-test"}
 	if _, err := c.Chat(context.Background(), &Request{Model: "x"}); !errors.Is(err, ErrNotAuthorized) {
 		t.Fatalf("a remote call under go test = %v", err)
 	}

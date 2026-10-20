@@ -73,7 +73,7 @@ type Run struct {
 	Questions   []Question     `json:"questions,omitempty"`
 	Usage       Usage          `json:"usage"`
 	Turns       int            `json:"turns"`
-	StopReason  string         `json:"stopReason"` // submitted | budget_exhausted | no_submit | infra_error
+	StopReason  string         `json:"stopReason"` // submitted | budget_exhausted | no_submit | infra_error | cost_ceiling
 	StopDetail  string         `json:"stopDetail,omitempty"`
 	SkillLoaded []string       `json:"skillLoaded,omitempty"`
 	Providers   []string       `json:"providers,omitempty"`

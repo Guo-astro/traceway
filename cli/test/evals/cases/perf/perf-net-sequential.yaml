@@ -3,7 +3,7 @@ suite: perf
 title: Portal dashboard is slow although every service behind it is fast
 tags: [smoke, network, node, nestjs, multi-service]
 seed: perf/net-sequential
-arms: [cli+skill, cli-noskill]
+arms: [cli+skill, cli-noskill, mcp]
 invoke: slash
 distractor: recommendations-service is the longest single hop, which reads like a slow upstream, but it is an internal service running at its own steady p95 (no spikes in the window) and it is only about a third of the request; the four hops add up.
 workspace: {repo: portal-web-api-nest}

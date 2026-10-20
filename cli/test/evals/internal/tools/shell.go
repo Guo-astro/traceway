@@ -165,7 +165,7 @@ func (r *shellRun) exec(ctx context.Context, args []string) error {
 		return exitStatus(r.xargs(ctx, hc, args[1:]))
 	}
 	if f, ok := coreutils[name]; ok {
-		return exitStatus(f(&uctx{hc: hc, run: r}, args[1:]))
+		return exitStatus(f(&uctx{hc: hc, run: r, ctx: ctx}, args[1:]))
 	}
 	msg := fmt.Sprintf("%s: command not found in this sandbox", name)
 	if why, ok := r.s.Denied[name]; ok {

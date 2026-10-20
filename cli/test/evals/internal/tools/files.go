@@ -180,6 +180,11 @@ func (t *Search) Call(_ context.Context, raw json.RawMessage) Result {
 		if d.IsDir() {
 			return nil
 		}
+		// Only regular files: a symlink the setup container planted could
+		// point anywhere on the host.
+		if !d.Type().IsRegular() {
+			return nil
+		}
 		if in.Glob != "" {
 			if ok, _ := path.Match(in.Glob, d.Name()); !ok {
 				return nil
