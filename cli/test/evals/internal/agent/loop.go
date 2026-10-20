@@ -23,6 +23,11 @@ type Config struct {
 	Prompt     string
 	SubmitTool string
 	Budget     catalog.Budget
+	// RunCap is this run's share of --max-cost-usd (0 = no cap).
+	RunCap float64
+	Ledger *Ledger
+	// Price estimates cost when the provider reports none.
+	Price      catalog.Price
 	Transcript *Transcript
 	// AfterCall runs harness hooks after each executed call.
 	AfterCall func(ctx context.Context, c *record.Call)
@@ -38,6 +43,7 @@ const (
 	StopBudget    = "budget_exhausted"
 	StopNoSubmit  = "no_submit"
 	StopInfra     = "infra_error"
+	StopCeiling   = "cost_ceiling"
 )
 
 // Run drives the model until it submits, a budget runs out, or it stops
@@ -86,6 +92,14 @@ func Run(ctx context.Context, cfg Config) *record.Run {
 		if run.Turns >= budget.MaxTurns {
 			return finish(StopBudget, fmt.Sprintf("max_turns %d reached", budget.MaxTurns))
 		}
+		// The dispatch ceiling stops new runs from starting (runner.Execute);
+		// a run already in flight finishes, bounded by its own cap.
+		if run.Turns == 0 && cfg.Ledger.Exhausted() {
+			return finish(StopCeiling, "the dispatch's --max-cost-usd ceiling was reached")
+		}
+		if cfg.RunCap > 0 && run.Usage.CostUSD >= cfg.RunCap {
+			return finish(StopBudget, fmt.Sprintf("run cost cap $%.2f reached", cfg.RunCap))
+		}
 		run.Turns++
 		req := &Request{
 			Model:      cfg.Model.ID,
@@ -111,8 +125,9 @@ func Run(ctx context.Context, cfg Config) *record.Run {
 			}
 			return finish(StopInfra, err.Error())
 		}
-		u := usageOf(resp)
+		u := usageOf(resp, cfg.Price)
 		run.Usage.Add(u)
+		cfg.Ledger.Add(cfg.Model.Key, u.CostUSD)
 		outputTokens += u.OutputTokens - u.ReasoningTokens
 		if resp.Provider != "" {
 			providers[resp.Provider] = true
@@ -197,8 +212,8 @@ func nonEmpty(s string) string {
 	return s
 }
 
-func usageOf(r *Response) record.Usage {
-	return record.Usage{
+func usageOf(r *Response, p catalog.Price) record.Usage {
+	u := record.Usage{
 		InputTokens:      r.Usage.PromptTokens,
 		CachedTokens:     r.Usage.PromptTokensDetails.CachedTokens,
 		CacheWriteTokens: r.Usage.PromptTokensDetails.CacheWriteTokens,
@@ -206,4 +221,9 @@ func usageOf(r *Response) record.Usage {
 		ReasoningTokens:  r.Usage.CompletionTokensDetails.ReasoningTokens,
 		CostUSD:          r.Usage.Cost,
 	}
+	if u.CostUSD == 0 && (u.InputTokens > 0 || u.OutputTokens > 0) && p.Prompt > 0 {
+		uncached := u.InputTokens - u.CachedTokens - u.CacheWriteTokens
+		u.CostUSD = (float64(uncached)*p.Prompt + float64(u.CachedTokens)*p.CacheRead + float64(u.CacheWriteTokens)*p.CacheWrite + float64(u.OutputTokens)*p.Completion) / 1e6
+	}
+	return u
 }

@@ -54,6 +54,8 @@ func Answer(in *Input) *Verdict {
 		if exp.Onset != nil && exp.Onset.At != "" {
 			gradeOnset(v, sub["onset"], exp.Onset)
 		}
+	case "debug":
+		answerDebug(v, exp, sub)
 	}
 	if len(exp.MentionsAll) > 0 {
 		raw, _ := json.Marshal(sub)

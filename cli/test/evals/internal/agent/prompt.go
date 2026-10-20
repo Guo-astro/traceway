@@ -16,7 +16,10 @@ type PromptInput struct {
 	Skills []tools.Skill
 	// Preloaded is the SKILL.md body of a slash-invoked skill.
 	Preloaded *tools.Skill
-	// Environment describes the machine (the CLI installed and logged in).
+	// MCPInstructions are the connected server's instructions.
+	MCPInstructions string
+	// Environment describes the machine (CLI installed and logged in, or an
+	// MCP server connected).
 	Environment string
 }
 
@@ -39,6 +42,11 @@ Every tool result starts with a line like [call c07]. When you cite evidence, ci
 		for _, s := range in.Skills {
 			fmt.Fprintf(&b, "- %s: %s\n", s.Name, s.Description)
 		}
+	}
+	if in.MCPInstructions != "" {
+		b.WriteString("\n# Connected MCP server: traceway\n\nIts tools are named mcp__traceway__<tool>. The server's instructions:\n\n")
+		b.WriteString(in.MCPInstructions)
+		b.WriteString("\n")
 	}
 	if in.Preloaded != nil {
 		fmt.Fprintf(&b, "\n# The user invoked /%s\n\nThe %s skill is loaded; its instructions follow. Its companion files are under .skills/%s/.\n\n", in.Preloaded.Name, in.Preloaded.Name, in.Preloaded.Name)

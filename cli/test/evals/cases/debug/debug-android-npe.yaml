@@ -3,7 +3,7 @@ suite: debug
 title: Android feed crashes while scrolling since the 5.8.0 rollout
 tags: [mobile, android, kotlin]
 seed: debug/android-npe
-arms: [cli+skill, cli-noskill]
+arms: [cli+skill, cli-noskill, mcp]
 invoke: slash
 distractor: An OutOfMemoryError group in the full-size image viewer (FullImageActivity.decodeOriginal) on low-memory phones has been around for weeks on every version; the feed crash is new with 5.8.0 and is an NPE in the adapter.
 workspace: {repo: feed-android}

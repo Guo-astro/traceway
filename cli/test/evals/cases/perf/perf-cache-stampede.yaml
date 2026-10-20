@@ -3,7 +3,7 @@ suite: perf
 title: Home page requests stall for seconds in bursts
 tags: [smoke, caching, go, redis]
 seed: perf/cache-stampede
-arms: [cli+skill, cli-noskill]
+arms: [cli+skill, cli-noskill, mcp]
 invoke: slash
 distractor: The slow requests run all twelve home queries against the database on the request path, which reads like a missing cache, but the cache is there and serves ~98% of requests in ~3ms; the slow requests all land in the seconds after the cached feed expires, when every request in flight rebuilds it at once.
 workspace: {repo: home-api-go}

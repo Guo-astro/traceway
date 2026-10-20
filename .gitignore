@@ -64,8 +64,8 @@ backend/static/dist/
 /benchmarks/_artifact/
 benchmarks/loadgen/bench-loadgen
 
-# Eval harness (cli/test/evals): built binaries, oracle caches and run
-# results. Results are never committed.
+# Eval harness (cli/test/evals): built binaries, model and oracle caches, and
+# run results. Results are uploaded by the CLI Evals workflow, never committed.
 /cli/test/evals/.cache/
 /cli/test/evals/results/
 

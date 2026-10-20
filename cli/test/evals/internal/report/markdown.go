@@ -38,7 +38,7 @@ func Markdown(r *Results) string {
 	// An oracle run costs nothing, so its summary leaves money out.
 	paid := !h.Oracle
 	if paid {
-		fmt.Fprintf(&b, "- **Spend:** $%.2f\n", a.SpendUSD)
+		fmt.Fprintf(&b, "- **Spend:** $%.2f (judge $%.2f) of a $%.2f cap\n", a.SpendUSD, a.JudgeUSD, h.MaxCostUSD)
 	}
 	var st []string
 	for k, v := range a.Statuses {
@@ -58,6 +58,12 @@ func Markdown(r *Results) string {
 		b.WriteString("\n## Skill uplift (cli+skill minus cli-noskill)\n\n| Suite | Model | With skill | Without | Uplift |\n|---|---|---|---|---|\n")
 		for _, d := range a.SkillUplift {
 			fmt.Fprintf(&b, "| %s | %s | %.0f%% | %.0f%% | %+.0fpp |\n", d.Suite, d.Model, d.RateA*100, d.RateB*100, d.Delta)
+		}
+	}
+	if len(a.CLIvsMCP) > 0 {
+		b.WriteString("\n## CLI vs MCP\n\n| Suite | Model | CLI arm | MCP arm | CLI | MCP | Delta |\n|---|---|---|---|---|---|---|\n")
+		for _, d := range a.CLIvsMCP {
+			fmt.Fprintf(&b, "| %s | %s | %s | %s | %.0f%% | %.0f%% | %+.0fpp |\n", d.Suite, d.Model, d.A, d.B, d.RateA*100, d.RateB*100, d.Delta)
 		}
 	}
 	if len(a.Models) > 0 {

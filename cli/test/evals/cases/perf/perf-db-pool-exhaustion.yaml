@@ -3,7 +3,7 @@ suite: perf
 title: Checkout stalls for seconds at the lunch and evening rushes
 tags: [smoke, database, python, fastapi]
 seed: perf/db-pool-exhaustion
-arms: [cli+skill, cli-noskill]
+arms: [cli+skill, cli-noskill, mcp]
 invoke: slash
 distractor: A slow database or the payment provider. The inventory query takes 40-60ms and the payment call 150-260ms at every hour, rushes included; the seconds go to a gap before the first query, and GET /api/cart, which only runs a 3ms query on the same pool, stalls at the same hours.
 workspace: {repo: checkout-api-py}

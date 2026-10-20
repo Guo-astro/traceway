@@ -13,18 +13,27 @@ import (
 	"github.com/tracewayapp/traceway/cli/test/evals/internal/record"
 )
 
-// SubmitPerf is the perf suite's final-answer tool.
-const SubmitPerf = "submit_perf_diagnosis"
+// The final-answer tools: perf, debug, and finish for write and setup.
+const (
+	SubmitPerf  = "submit_perf_diagnosis"
+	SubmitDebug = "submit_debug_diagnosis"
+	Finish      = "finish"
+)
 
 // IsSubmit reports whether a tool is a final-answer tool.
-func IsSubmit(name string) bool { return name == SubmitPerf }
+func IsSubmit(name string) bool {
+	return name == SubmitPerf || name == SubmitDebug || name == Finish
+}
+
+// DebugCategories are submit_debug_diagnosis's category values.
+var DebugCategories = []string{"null_reference", "missing_key", "type_or_contract_mismatch", "race_or_duplicate", "timeout", "config", "resource_exhaustion", "logic", "unknown"}
 
 // Submit is a final-answer tool. It validates the payload against its
 // schema and the call ids it cites; a failure goes back to the model for
 // repair, up to MaxRepairs times, after which the last payload is accepted
 // as-is for grading.
 type Submit struct {
-	Kind       string // the tool's name: SubmitPerf
+	Kind       string // SubmitPerf | SubmitDebug | Finish
 	CallExists func(id string) (ok, exists bool)
 	MaxRepairs int
 
@@ -33,31 +42,63 @@ type Submit struct {
 }
 
 func (t *Submit) Spec() Spec {
-	var rows []string
-	for _, r := range checklist.Rows() {
-		rows = append(rows, fmt.Sprintf("%s (%s)", r.ID, r.Title))
+	switch t.Kind {
+	case SubmitPerf:
+		var rows []string
+		for _, r := range checklist.Rows() {
+			rows = append(rows, fmt.Sprintf("%s (%s)", r.ID, r.Title))
+		}
+		ids := checklist.IDs()
+		item := map[string]any{"type": "string", "enum": ids}
+		return Spec{Name: SubmitPerf, Description: "Submit your final performance diagnosis. This ends the task. " +
+			"checklist_item is the bottleneck checklist row that explains the latency, or none_found when the latency is within expectations, or insufficient_evidence when the telemetry cannot tell. Rows: " + strings.Join(rows, "; ") + ". " +
+			"Every evidence item cites the id of an earlier tool call (the [call cNN] line at the top of its result).",
+			Parameters: obj(map[string]any{
+				"checklist_item": item,
+				"category":       strProp("database, application, network, caching, infrastructure, or none"),
+				"locus": obj(map[string]any{
+					"endpoint": strProp("Endpoint name, e.g. GET /api/orders"),
+					"span":     strProp("The dominating span or query"),
+					"service":  strProp("Service name"),
+					"host":     strProp("Host or instance, when the cause is host-specific"),
+				}),
+				"onset":      map[string]any{"type": []string{"string", "null"}, "description": "RFC 3339 time the slowness started, or null"},
+				"evidence":   evidenceSchema(),
+				"ruled_out":  map[string]any{"type": "array", "items": obj(map[string]any{"checklist_item": item, "call_id": strProp("Call id"), "reason": strProp("Why it is ruled out")}, "checklist_item", "reason")},
+				"fix":        strProp("The concrete fix"),
+				"confidence": map[string]any{"type": "string", "enum": []string{"low", "medium", "high"}},
+				"report":     strProp("Your report to the user, in Markdown"),
+			}, "checklist_item", "locus", "evidence", "fix", "confidence", "report")}
+	case SubmitDebug:
+		return Spec{Name: SubmitDebug, Description: "Submit your final debugging diagnosis. This ends the task. Every evidence item cites the id of an earlier tool call (the [call cNN] line at the top of its result).",
+			Parameters: obj(map[string]any{
+				"issue_hash":    strProp("The exception group hash (16 hex), if the bug has one"),
+				"occurrence_id": strProp("The occurrence you anchored on, if any"),
+				"category":      map[string]any{"type": "string", "enum": DebugCategories},
+				"culprit": obj(map[string]any{
+					"file":   strProp("Workspace-relative file"),
+					"symbol": strProp("Function or method"),
+					"line":   intProp("Line number"),
+				}, "file"),
+				"evidence":              evidenceSchema(),
+				"fix_summary":           strProp("What you changed or propose to change"),
+				"files_changed":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"needs_instrumentation": map[string]any{"type": "boolean", "description": "True when the telemetry cannot explain the failure and you added instrumentation instead of a fix"},
+				"confidence":            map[string]any{"type": "string", "enum": []string{"low", "medium", "high"}},
+				"report":                strProp("Your report to the user, in Markdown"),
+			}, "category", "culprit", "evidence", "fix_summary", "needs_instrumentation", "confidence", "report")}
+	default:
+		return Spec{Name: Finish, Description: "Finish the task and report what you did. This ends the task.",
+			Parameters: obj(map[string]any{
+				"summary": strProp("Your report to the user, in Markdown"),
+				"changes": map[string]any{"type": "array", "items": obj(map[string]any{
+					"action":    strProp("What you changed, e.g. snooze alert rule"),
+					"target":    strProp("The record, e.g. rule 12"),
+					"new_value": strProp("The new state"),
+					"undo":      strProp("How to undo it"),
+				}, "action", "target")},
+			}, "summary", "changes")}
 	}
-	ids := checklist.IDs()
-	item := map[string]any{"type": "string", "enum": ids}
-	return Spec{Name: SubmitPerf, Description: "Submit your final performance diagnosis. This ends the task. " +
-		"checklist_item is the bottleneck checklist row that explains the latency, or none_found when the latency is within expectations, or insufficient_evidence when the telemetry cannot tell. Rows: " + strings.Join(rows, "; ") + ". " +
-		"Every evidence item cites the id of an earlier tool call (the [call cNN] line at the top of its result).",
-		Parameters: obj(map[string]any{
-			"checklist_item": item,
-			"category":       strProp("database, application, network, caching, infrastructure, or none"),
-			"locus": obj(map[string]any{
-				"endpoint": strProp("Endpoint name, e.g. GET /api/orders"),
-				"span":     strProp("The dominating span or query"),
-				"service":  strProp("Service name"),
-				"host":     strProp("Host or instance, when the cause is host-specific"),
-			}),
-			"onset":      map[string]any{"type": []string{"string", "null"}, "description": "RFC 3339 time the slowness started, or null"},
-			"evidence":   evidenceSchema(),
-			"ruled_out":  map[string]any{"type": "array", "items": obj(map[string]any{"checklist_item": item, "call_id": strProp("Call id"), "reason": strProp("Why it is ruled out")}, "checklist_item", "reason")},
-			"fix":        strProp("The concrete fix"),
-			"confidence": map[string]any{"type": "string", "enum": []string{"low", "medium", "high"}},
-			"report":     strProp("Your report to the user, in Markdown"),
-		}, "checklist_item", "locus", "evidence", "fix", "confidence", "report")}
 }
 
 func evidenceSchema() map[string]any {
@@ -129,19 +170,35 @@ func (t *Submit) validate(p map[string]any) []string {
 			}
 		}
 	}
-	need("checklist_item", "locus", "evidence", "fix", "confidence", "report")
-	if v := str("checklist_item"); v != "" && !checklist.IsID(v) {
-		probs = append(probs, fmt.Sprintf("checklist_item %q is not one of the allowed values", v))
-	}
-	if rs, ok := p["ruled_out"].([]any); ok {
-		for i, r := range rs {
-			m, _ := r.(map[string]any)
-			if v, _ := m["checklist_item"].(string); v != "" && !checklist.IsID(v) {
-				probs = append(probs, fmt.Sprintf("ruled_out[%d].checklist_item %q is not an allowed value", i, v))
+	switch t.Kind {
+	case SubmitPerf:
+		need("checklist_item", "locus", "evidence", "fix", "confidence", "report")
+		if v := str("checklist_item"); v != "" && !checklist.IsID(v) {
+			probs = append(probs, fmt.Sprintf("checklist_item %q is not one of the allowed values", v))
+		}
+		if rs, ok := p["ruled_out"].([]any); ok {
+			for i, r := range rs {
+				m, _ := r.(map[string]any)
+				if v, _ := m["checklist_item"].(string); v != "" && !checklist.IsID(v) {
+					probs = append(probs, fmt.Sprintf("ruled_out[%d].checklist_item %q is not an allowed value", i, v))
+				}
 			}
 		}
+		checkEvidence()
+	case SubmitDebug:
+		need("category", "culprit", "evidence", "fix_summary", "needs_instrumentation", "confidence", "report")
+		if v := str("category"); v != "" && !slices.Contains(DebugCategories, v) {
+			probs = append(probs, fmt.Sprintf("category %q is not one of %v", v, DebugCategories))
+		}
+		if c, ok := p["culprit"].(map[string]any); ok {
+			if f, _ := c["file"].(string); f == "" {
+				probs = append(probs, "culprit.file is required")
+			}
+		}
+		checkEvidence()
+	default:
+		need("summary", "changes")
 	}
-	checkEvidence()
 	if c := str("confidence"); c != "" && !slices.Contains([]string{"low", "medium", "high"}, c) {
 		probs = append(probs, "confidence must be low, medium or high")
 	}

@@ -1,8 +1,8 @@
 // Package tools implements what the agent under test can call: a sandboxed
 // shell (an interpreter with an allowlist, never the host shell), confined
-// file tools, skills, ask_user, and the structured submit tools. Every call
-// returns the operations it performed so the graders can check the
-// trajectory.
+// file tools, skills, an MCP bridge, ask_user, and the structured submit
+// tools. Every call returns the operations it performed so the graders can
+// map CLI and MCP runs onto the same trajectory.
 package tools
 
 import (
@@ -43,6 +43,11 @@ type Tool interface {
 
 // MaxOutput caps what one shell or file call returns to the model.
 const MaxOutput = 30000
+
+// MaxMCPOutput caps one MCP tool result. An MCP client cannot pipe a result
+// through jq, so the cap mirrors Claude Code's MCP output limit (about 25k
+// tokens) rather than the shell's.
+const MaxMCPOutput = 100000
 
 // Cap truncates s to MaxOutput characters with a marker.
 func Cap(s string) (string, bool) { return CapAt(s, MaxOutput) }

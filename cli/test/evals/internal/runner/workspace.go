@@ -81,7 +81,10 @@ func buildWorkspace(evalsRoot, repo, work string, now time.Time) error {
 	}
 	src := filepath.Join(evalsRoot, "testdata", "repos", repo)
 	if _, err := os.Stat(src); err != nil {
-		return fmt.Errorf("fixture repo %s: not in testdata/repos", repo)
+		src = filepath.Join(evalsRoot, "testdata", "setup-templates", repo)
+		if _, err := os.Stat(src); err != nil {
+			return fmt.Errorf("fixture repo %s: not in testdata/repos or testdata/setup-templates", repo)
+		}
 	}
 	var hist fixtureHistory
 	if raw, err := os.ReadFile(filepath.Join(src, "history.yaml")); err == nil {
@@ -206,5 +209,7 @@ func installSkills(repoRoot, work string, names []string) error {
 
 // skillSources maps a skill name to its published directory in the repo.
 var skillSources = map[string]string{
-	"traceway": "skills/traceway",
+	"traceway":       "skills/traceway",
+	"traceway-write": "plugins/tw-write/skills/traceway-write",
+	"traceway-setup": "skills/traceway-setup",
 }

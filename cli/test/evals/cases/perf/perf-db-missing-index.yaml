@@ -3,7 +3,7 @@ suite: perf
 title: The user lookup gets slower every week as the users table grows
 tags: [database, python, fastapi]
 seed: perf/db-missing-index
-arms: [cli+skill, cli-noskill]
+arms: [cli+skill, cli-noskill, mcp]
 invoke: slash
 distractor: Release 1.13.0 two weeks ago changed POST /api/invites (two primary-key reads and an email enqueue, a few milliseconds); the lookup's curve climbs steadily through the whole month with no step at the release, and the release did not touch the lookup.
 workspace: {repo: accounts-api-py}

@@ -1,59 +1,149 @@
 # Traceway skill and MCP evals
 
-**Manual only, and free.** Nothing here runs automatically: no workflow, no
-`just check`/`test`/`default` recipe. This harness plays every case with a
-fake model on loopback and makes no paid model calls; its Chat Completions
-client refuses any non-loopback URL.
+**Manual only.** Evals run from the CLI Evals workflow, which you start by hand
+(`workflow_dispatch`) and approve at the `evals` environment gate. Nothing
+triggers it automatically.
 
-This module measures how well AI agents use Traceway through its skills. Every
-run gets its own hermetic Traceway instance, the standalone backend in SQLite
-mode, seeded through the real ingest endpoints. The agent works through real
-`traceway` commands in a sandboxed shell, and deterministic graders score the
-result.
+This module measures how well AI agents use Traceway through the skills
+(`traceway`, `traceway-write`, `traceway-setup`) and the MCP servers (`/mcp`,
+`/mcp/write`), for read and write work. Every run gets its own hermetic
+Traceway instance, the standalone backend in SQLite mode, seeded through the
+real ingest endpoints. The agent works through real `traceway` commands or MCP
+tools, and deterministic graders score the result.
 
 | Suite | Measures | Arms |
 |---|---|---|
-| perf | Diagnosing latency against the bottleneck checklist in `performance.md` | `cli+skill`, `cli-noskill` |
+| perf | Diagnosing latency against every bottleneck row in `performance.md` | `cli+skill`, `cli-noskill`, `mcp` |
+| debug | Debugging an issue to root cause and fixing the code | `cli+skill`, `cli-noskill`, `mcp` |
+| write | The write playbooks (pages, alerts, monitors, archive, post-mortems, slow marks) and the 403 policy | `cli-write+skill`, `mcp-write` |
+| setup | Instrumenting an app with the setup skill until its telemetry arrives | `cli+setup-skill` |
 
-`cli+skill` installs the `traceway` skill; `cli-noskill` is the same CLI with
-no skill, the baseline that skill uplift is measured against.
+The agents are `anthropic/claude-opus-5.5` and `openai/gpt-6-astra`, and the
+judge is `anthropic/claude-haiku-5.5`. All three run on OpenRouter, in the same
+harness, with the same tools, prompts and budgets (`models.yaml`).
+
+## The manual-only policy
+
+1. **Paid runs happen in GitHub, started by a person.** Actions → CLI Evals →
+   Run workflow (or `gh workflow run cli-evals.yml`). The free preflight job
+   writes the matrix and a live-price estimate into the job summary. The
+   paid job waits for a required reviewer on the `evals` environment, which
+   is the only place `OPENROUTER_API_KEY` exists.
+2. **Nothing runs automatically.** `cli-evals.yml` has exactly one trigger,
+   `workflow_dispatch`. There is no push, pull request, label, schedule,
+   `workflow_run`, `workflow_call` or `repository_dispatch` trigger. No other
+   workflow calls it, and no `just` recipe in `check`/`test`/`default` runs it.
+3. **Enforced in code:**
+   - `internal/guard/triggers_test.go` fails if the workflow gains a trigger, a
+     paid job loses `environment: evals`, or another workflow references it or
+     starts `twevals run`.
+   - `twevals run` and `twevals resume` start in CI only inside a dispatched
+     `cli-evals.yml` job that set `TWEVALS_APPROVED=1` (the gated job does).
+     They refuse any other GitHub event, any other workflow, and any other CI
+     system.
+   - `--max-cost-usd` is required, with no default. The workflow splits it
+     into hard per-shard caps.
+   - `go test ./...` can never call OpenRouter: the real client requires
+     `guard.Live()`, which is false under `go test`.
+4. **Local paid runs are for harness development only.** On a terminal you
+   must type `yes` after reading the preflight. Without a terminal, `--yes` is
+   required. Recorded results (checkpoints, baselines) come from the workflow.
 
 ## Running it
 
-From `cli/`:
+### In GitHub (the normal path)
 
 ```
-just eval-harness
+gh workflow run cli-evals.yml --ref <branch> -f preset=smoke -f models=opus,astra -f max_cost_usd=30
 ```
 
-runs `go test ./...` and then every case's oracle on every arm it lists, with
-the fake model. From `cli/test/evals`, `go run ./cmd/twevals help` lists the
-commands:
+Then open the run, read the preflight estimate in the summary, and approve
+the `evals` gate. `just eval-dispatch -f preset=smoke -f max_cost_usd=30` from
+`cli/` does the same.
 
-- `twevals list [--preset P] [--cases GLOB] [--arms A]` prints the case × arm
-  combinations a selection picks.
-- `twevals oracle [--all | <case-id>... | --suites S] [--arms A] [-j N]
-  [--keep] [--out DIR]` plays the oracles and writes `results.json` and
-  `summary.md` to `--out` (default `.cache/oracle/<timestamp>/`). It exits `1`
-  when an oracle fails.
+| Input | Meaning |
+|---|---|
+| `preset` | `smoke`: the cases tagged `smoke`, primary arm. `core`: every case, primary arm. `full`: every arm the case lists |
+| `cases` | Comma-separated ids or globs (`perf-db-*`). Overrides the preset's case filter |
+| `suites`, `arms` | Narrow the selection |
+| `models` | `opus,astra`, `opus` or `astra` |
+| `runs` | Repeats per case, 1-3 |
+| `max_cost_usd` | Hard cap for the whole dispatch. Required |
+| `dry_run` | Preflight, harness tests and every oracle only. Costs $0. Use it to validate workflow edits and Dependabot bumps |
+| `judge` | Score reports with the (non-gating) LLM judge |
+| `compare_baseline` | Compare against `baseline.json`; a regression turns the report job red |
 
-Presets (`presets.yaml`): `smoke` is the cases tagged `smoke` on the primary
-arm, `core` every case on the primary arm, `full` every arm a case lists.
+The workflow never commits. It uploads `results.json`, `summary.md` and every
+transcript, with tokens redacted, for 30 days.
 
-Requirements: Go (the `go`/`toolchain` lines of `go.mod`) and git. The
-harness builds the backend and both CLI editions from this checkout into
-`.cache/` (gitignored) and reuses them until the sources change.
+### Locally (free)
 
-## Reading the results
+From `cli/` (each recipe runs only when you type it):
 
-A run is `pass`, `fail`, `budget_exhausted` (counted as a fail) or
-`infra_error` (excluded from pass rates).
+| Command | What it does |
+|---|---|
+| `just eval-harness` | `go test ./...` plus every oracle trajectory, with the fake model. Free |
+| `just eval-plan --preset core --max-cost-usd 200` | The preflight table and cost estimate. Free |
+| `just eval-env perf-db-n-plus-1` | Boots and seeds one case, then prints the dashboard URL, a login and a read PAT so you can look at the data by eye |
+| `just eval-local --cases perf-db-n-plus-1 --models opus --max-cost-usd 5` | A paid local run, for harness development only. It asks you to type `yes` |
+| `just eval-dispatch ...` | `gh workflow run cli-evals.yml ...` |
+
+Directly from `cli/test/evals`, `go run ./cmd/twevals help` lists every
+command. `twevals oracle <id>...` (or `--all`, or `--suites S`) plays a case's
+oracle on every arm it lists and writes `results.json` and `summary.md` to
+`--out` (default `.cache/oracle/<timestamp>/`).
+`twevals report <dir>...` merges shard results. `twevals compare <dir>`
+applies the regression rule. `twevals baseline update <dir>` rewrites
+`baseline.json` for you to commit.
+
+Requirements: Go (the `go`/`toolchain` lines of `go.mod`), git, and Docker for
+the setup suite. Docker also runs the hidden tests of a model's patch with no
+network. Without Docker, setup runs of a real model fail, and hidden tests of
+a real model's patch are skipped unless `TWEVALS_HOST_TESTS=1`. Oracle runs
+(our own code) use the host when Docker is missing.
+
+### Exit codes
+
+`0` ok, `1` regression (compare), a failed oracle or an error, `2` bad usage
+or partial: the cost ceiling stopped the run (continue with `twevals resume
+<dir> --max-cost-usd X`) or more than 10% of runs hit infra errors.
+
+## Cost
+
+Estimates per run, from `models.yaml` until `baseline.json` has measured
+averages: 100-400k cumulative input tokens (about 70% cached), 5-15k output.
+
+| Model | Per run (typical) | Per run (no cache) |
+|---|---|---|
+| Opus 5.5 | ~$0.26-0.96 | up to ~$1.90 |
+| GPT-6 Astra | ~$0.62-2.23 | up to ~$4.75 |
+| Judge (Haiku 5.5) | under $0.01 | |
+
+`twevals plan` prints the real numbers from live OpenRouter prices, including
+the cache-write price and long-prompt tiers. Controls: the required cap, the
+preflight, the gate, per-shard caps, a check before every run, `dry_run`, and
+the record/replay cache (`--cache record|replay`, `EVAL_CACHE`).
+
+## Reading the report
+
+`summary.md` has these sections:
+
+- pass rates by suite × model × arm;
+- skill uplift (`cli+skill` minus `cli-noskill`, on the same cases);
+- CLI vs MCP;
+- model vs model;
+- cost and cache hit rate per model;
+- the top failing graders and the worst cases;
+- one line per run, with its first failure.
+
+A run is `pass`, `fail`, `budget_exhausted` (counted as a fail),
+`infra_error` or `cost_ceiling`; the last two are excluded from pass rates.
 
 Each run directory, `runs/<case>/<arm>/<model>/r<N>/` (with `+` in the arm
 written as `_`, so `cli_skill`), holds:
 
-- `transcript.jsonl`: every model response, every tool call with its id, op,
-  argv, exit code and output;
+- `transcript.jsonl`: every model response with usage and provider, every
+  tool call with its id, op, argv or args, exit code and output;
 - `run.json` and `result.json`;
 - `seed.json`: the ids the seed exposed. The agent never sees it;
 - the workspace, when the run failed or `--keep` was set.
@@ -62,10 +152,25 @@ Graders:
 
 | Grader | Gates | Checks |
 |---|---|---|
-| `answer` | yes | The structured answer: checklist row (and not the distractor), locus, onset |
-| `trajectory` | yes | Required, alternative, forbidden and ordered operations, and thrash limits, on surface-neutral operations (`internal/ops`) |
+| `answer` | yes | The structured answer: checklist row (and not the distractor), locus, onset; or the debug category, culprit file, symbol and line (±3) |
+| `trajectory` | yes | Required, alternative, forbidden and ordered operations, and thrash limits. CLI and MCP calls map to the same operations (`internal/ops`) |
 | `grounding` | yes | Cited calls exist, succeeded and were not truncated. Their output contains the deciding signal. No id in the answer was invented |
-| `report` | yes | Regexps the final report must or must not match, for cases that set `expect.report` |
+| `state` | yes | After write and setup runs: the backend and the workspace are in the expected state |
+| `hidden_tests` | per case | Hidden tests copied in after the run, and whether the diff touches the culprit |
+| `setup_verify` | yes | The instrumented app builds, starts against the backend, and serves traffic |
+| `judge` | no | The rubric, scored by Haiku. It does not gate until it agrees with human labels on at least 85% of runs |
+
+## Baseline
+
+`baseline.json` holds pass rates per suite and case and the measured per-run
+usage per model, which the preflight uses instead of the `models.yaml`
+envelope. To update it, download the `eval-report` artifact, run
+`go run ./cmd/twevals baseline update merged`, review the diff, and commit it
+in a normal PR.
+
+The regression rule: a suite's pass rate drops more than 10 percentage points
+for a model × arm, or a case at 2 of 3 or better in the baseline now passes 0
+of N.
 
 ## Adding a case
 
@@ -83,7 +188,8 @@ are valid, and the leakage lint is clean. Done means:
 2. `twevals oracle <id>` passes on every arm the case lists.
 3. `go test ./internal/suite/` passes.
 
-`perf-db-n-plus-1` is the exemplar.
+The exemplars show every part: `perf-db-n-plus-1`, `debug-go-nil-regression`,
+`write-alert-snooze`, `setup-go-nethttp`.
 
 ### The seed DSL (`internal/seed`)
 
@@ -138,9 +244,16 @@ func seedNPlusOne(s *seed.Scenario) error {
 - **Browser and mobile SDK data** goes through `p.Crash(seed.Crash{...})`, with
   network and navigation `Actions` and console `Logs`, and `p.Session(...)`.
   It travels the native `/api/report` protocol, and covers only what those
-  SDKs really send: no frame timings, no mobile metrics. `p.GroupMatching`
-  reads an exception group's hash back after ingest; put work that needs the
-  ingested data in `s.AfterFlush`.
+  SDKs really send: no frame timings, no mobile metrics.
+- **Dashboard objects:**
+  - `p.PagingChannel`, `p.EmailChannel`, `p.Rule(seed.Rule{...})` and
+    `p.WaitPage(ruleID, timeout)`. A page should come from a rule that really
+    fires.
+  - `p.Check(...)` and `p.RunCheckUntil(id, "down", ...)` against
+    `s.Sink.Stub()`, the switchable HTTP target.
+  - `p.PostMortem`, `p.MarkSlow`, `p.Archive` and `p.GroupMatching` (read an
+    exception group's hash back).
+  - Put work that needs the ingested data in `s.AfterFlush`.
 - **Volume.** Requests outside the detail sample are sent as their root span
   (and any downstream server spans), so percentiles and counts stay complete
   while a scenario stays under about 20k spans. Requests with logs, errors or
@@ -162,6 +275,13 @@ Backend facts that bite (each one cost a case author an afternoon):
   should catch the skill's reliance on it.
 - A log body search over more than 24 hours answers 422 unless another filter
   (service, severity, trace) narrows it.
+- MCP results are JSON and escape `&`, `<` and `>`; grounding compares them
+  unescaped, but a jq-free MCP agent sees the escaped form.
+- A new monitor runs once on its own within a scheduler tick (5s here), so
+  switch the stub only after that first run (see `wr_monitor.go`).
+- Pages, monitors and incidents are stamped with real wall-clock time; seeds
+  that need telemetry around a page lay it out near ingest time
+  (`wr_timing.go`).
 - Rare events confined to a short window can come out empty at some hours of
   the day (the arrival process follows the wall-clock hour). Use `Burst`, or
   seed the case at every hour of the day into `seed.NewDrySink()` and check
@@ -182,16 +302,23 @@ See `perf-db-n-plus-1.yaml` for the full shape. The keys:
 
 - `arms` and `invoke`: `slash` preloads SKILL.md the way a `/traceway`
   command does, and `natural` makes the agent load the skill itself. A slash
-  case's prompt starts with `/traceway`, and only a slash case's does.
-- `workspace.repo`: a fixture under `testdata/repos`. Fixtures can carry
-  history: a `history.yaml` whose commits are overlays under `.history/`
-  (only the files that differ from the fixture, plus an `absent:` list of
-  files the commit lacks), committed with ages relative to the run so
-  `git log` lines up with the seeded deploys.
+  case's prompt starts with `/<skill>`, and only a slash case's does.
+- `workspace.repo`: a fixture under `testdata/repos` or
+  `testdata/setup-templates`. Fixtures can carry history: a `history.yaml`
+  whose commits are overlays under `.history/` (only the files that differ
+  from the fixture, plus an `absent:` list of files the commit lacks),
+  committed with ages relative to the run so `git log` lines up with the
+  seeded deploys.
 - `prompt`, `budget`, `user`: scripted `ask_user` answers, first match wins.
-- `expect.answer`, `expect.grounding`, `expect.calls`, `expect.report`.
-- `judge.rubric` and `judge.expected`, the rubric for report quality. The
-  harness does not score it.
+- `credential` (`scope: read`, `member: readonly`) and `agent_access: false`
+  for the policy cases.
+- `expect.answer`, `expect.grounding`, `expect.calls`, `expect.state` (kinds
+  in `internal/grade/state.go`), `expect.code`, `expect.report`.
+- `judge.rubric` and `judge.expected`. Both are shown only to the judge.
+- `hooks`: harness actions after a matching call, such as editing a
+  post-mortem behind the agent's back.
+- `setup`: the env given to the agent's container shell (`@token:<project>`,
+  `@url`, `@port`), and the verify step.
 
 Templates are resolved after seeding:
 
@@ -203,6 +330,7 @@ Templates are resolved after seeding:
 | `{{env.projects.<name>.id}}` | Another project's id |
 | `{{env.stub}}` | The switchable stub's URL |
 | `{{env.now}}` | The scenario's "now" |
+| `{{env.setupToken}}` | A setup token (`tws_`), when `setup.token: setup` |
 
 A scalar that is exactly one template keeps its type.
 
@@ -210,13 +338,20 @@ The `oracle` is the reference trajectory the fake model plays:
 
 - **One step is one tool call**, so steps are cited as `c01`, `c02`, ... in
   the submitted evidence.
-- **`shell:` steps** run CLI commands. Use `jq` to keep cited outputs under
-  the 30k-character cap: a truncated citation fails grounding.
+- **`shell:` steps** run CLI commands. On MCP arms a step's first `traceway`
+  call becomes the matching MCP tool call. Use `jq` on CLI arms to keep cited
+  outputs under the 30k-character cap: a truncated citation fails grounding.
+  MCP results are capped at 100k.
+- **`op:` + `args:` steps** are surface-neutral, with MCP parameter names. On
+  CLI arms they render as a CLI command, adding `--yes` for writes.
+- **`write_file: {from: oracle/<case>/<file>}`** writes whole files for code
+  fixes, because YAML block scalars cannot start a line with a tab.
 - **`{{last.<json.path>}}` and `{{calls.c03.<path>}}`** read earlier tool
   results at play time.
 - **`load_skill:` steps** play as a harmless `list_files .` on arms without
-  skills (`cli-noskill`), so call ids stay the same on every arm.
-- **The oracle ends** with `submit:`.
+  skills (`cli-noskill`, `mcp`), so call ids stay the same on every arm.
+- **The oracle ends** with `submit:` (perf, debug) or `finish:` (write,
+  setup).
 
 While developing a case, `TWEVALS_ONLY=<ids>` limits loading to those cases,
 so an unfinished YAML file elsewhere cannot break your run.
@@ -233,32 +368,36 @@ reached` or Postgres's `deadlock detected`, and neutral names.
 ## Layout
 
 ```
-models.yaml presets.yaml
-cmd/twevals/           list | oracle
+models.yaml presets.yaml baseline.json
+cmd/twevals/           list | plan | run | resume | oracle | env up | report | compare | baseline update
 internal/catalog/      the case schema, presets, models.yaml
 internal/checklist/    the bottleneck rows of performance.md, the perf answer enum
-internal/env/          backend subprocess, registration, PATs, CLI logins, the stub
-internal/seed/         the DSL, OTLP and /api/report writers, read-back verification
+internal/env/          backend subprocess, registration, members, PATs, CLI logins, the monitor stub
+internal/seed/         the DSL, OTLP and /api/report writers, dashboard objects, read-back verification
 internal/scenarios/    one seed function per case
-internal/agent/        the Chat Completions client (loopback only), the loop, prompt caching, transcripts, the fake model
-internal/tools/        the sandboxed shell (mvdan.cc/sh, in-process coreutils, gojq, goawk), files, skills, ask_user, submit
-internal/ops/          CLI → operation mapping, cross-checked against tool-map.md
-internal/grade/        answer, trajectory, grounding, report, leakage
+internal/agent/        OpenRouter client, the loop, prompt caching, transcripts, record/replay, the fake model
+internal/tools/        the sandboxed shell (mvdan.cc/sh, in-process coreutils, gojq, goawk), files, skills, MCP bridge, ask_user, submit
+internal/ops/          CLI/MCP → operation mapping, cross-checked against tool-map.md
+internal/grade/        answer, trajectory, grounding, state, hidden tests, judge, leakage
 internal/record/       the run record: calls, operations, usage
-internal/runner/       one run end to end
-internal/report/       results.json and summary.md
+internal/runner/       one run end to end; the setup container shell
+internal/report/       results.json, summary.md, compare, cost estimates
+internal/guard/        the manual-only policy and the workflow trigger test
 internal/suite/        catalog-wide tests
-cases/ testdata/       cases, fixture repos, oracle files
+cases/ testdata/       cases; fixture repos, hidden tests, oracle files, setup templates, the sandbox image
 ```
 
-The agent's shell is an interpreter, never the host shell. It has the
-`traceway` binary (logged in with a read PAT whose config lives outside the
+The agent's shell is an interpreter, never the host shell. It has the arm's
+`traceway` binary (logged in with a PAT whose config lives outside the
 workspace), `jq`, `awk`, read-only text utilities confined to the workspace,
 and read-only `git`. No tool writes under a `.git` directory, git always
 uses the workspace's repository, and git refuses arguments that name a file
-outside the workspace or options that write files or run programs. Tool subprocesses get a scrubbed environment (`HOME`,
-`XDG_*`, `PATH`, `TZ`, `LANG`), so secrets in the harness's environment
-never reach them.
+outside the workspace or options that write files or run programs. Tool
+subprocesses get a scrubbed environment (`HOME`, `XDG_*`, `PATH`, `TZ`,
+`LANG`), so `OPENROUTER_API_KEY`, `GITHUB_TOKEN` and `JWT_SECRET` never reach
+them. MCP arms connect to the backend's `/mcp` or `/mcp/write` with a PAT.
+`project_id` defaults to the case's project, the way `traceway mcp` defaults
+to the CLI's current project.
 
 ## Credits
 
@@ -268,5 +407,4 @@ module as `perf-db-n-plus-1`, `perf-db-missing-index`, `perf-net-sequential`,
 `perf-db-pool-exhaustion`, `perf-app-sync-background`, `perf-net-large-payload`,
 `perf-cache-no-cache`, `perf-infra-cpu-saturation`, `perf-cache-stampede`,
 `perf-xs-ios-watchdog`, `perf-xs-android-timeouts`, `debug-android-npe` and
-`debug-flutter-null-check`. The two debug cases sit in `cases/debug/` and are
-not loaded yet: the harness runs the perf suite only.
+`debug-flutter-null-check`.

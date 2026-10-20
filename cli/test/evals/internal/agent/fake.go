@@ -14,14 +14,17 @@ import (
 	"sync"
 
 	"github.com/tracewayapp/traceway/cli/test/evals/internal/catalog"
+	"github.com/tracewayapp/traceway/cli/test/evals/internal/ops"
 	"github.com/tracewayapp/traceway/cli/test/evals/internal/tools"
 )
 
 // Fake is an httptest server speaking Chat Completions that plays a case's
 // oracle steps, one tool call per turn. It is the only model `go test` can
-// reach.
+// reach. Surface-neutral `op:` steps are rendered as a CLI command on shell
+// arms and as an MCP tool call on MCP arms, so one oracle covers both.
 type Fake struct {
-	Steps []catalog.Step
+	Steps  []catalog.Step
+	CLIBin string // traceway | traceway-write
 	// FileRoot resolves write_file `from:` paths.
 	FileRoot string
 
@@ -31,8 +34,8 @@ type Fake struct {
 }
 
 // NewFake starts the fake model.
-func NewFake(steps []catalog.Step, fileRoot string) *Fake {
-	f := &Fake{Steps: steps, FileRoot: fileRoot}
+func NewFake(steps []catalog.Step, cliBin, fileRoot string) *Fake {
+	f := &Fake{Steps: steps, CLIBin: cliBin, FileRoot: fileRoot}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	return f
 }
@@ -99,6 +102,12 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 
 func (f *Fake) render(s catalog.Step, tools map[string]bool, msgs []Message) (string, map[string]any, string, error) {
 	tmpl := func(v string) (string, error) { return resolveRuntime(v, msgs) }
+	mcpArm := false
+	for name := range tools {
+		if strings.HasPrefix(name, ops.MCPPrefix) {
+			mcpArm = true
+		}
+	}
 	switch {
 	case s.Say != "":
 		return "", nil, s.Say, nil
@@ -106,6 +115,53 @@ func (f *Fake) render(s catalog.Step, tools map[string]bool, msgs []Message) (st
 		cmd, err := tmpl(s.Shell)
 		if err != nil {
 			return "", nil, "", err
+		}
+		if !mcpArm {
+			return "shell", map[string]any{"command": cmd}, "", nil
+		}
+		op, err := firstTracewayOp(cmd)
+		if err != nil {
+			// Not a Traceway command (git, grep, ...): MCP arms have a
+			// shell too, without the traceway CLI.
+			if tools["shell"] {
+				return "shell", map[string]any{"command": cmd}, "", nil
+			}
+			return "", nil, "", err
+		}
+		return f.mcpCall(op.Op, op.Args, tools)
+	case s.Op != "":
+		args, err := resolveArgs(s.Args, msgs)
+		if err != nil {
+			return "", nil, "", err
+		}
+		if mcpArm {
+			if s.Stdin != "" {
+				in, err := tmpl(s.Stdin)
+				if err != nil {
+					return "", nil, "", err
+				}
+				args["content_md"] = in
+			}
+			return f.mcpCall(s.Op, args, tools)
+		}
+		if _, ok := args["content_md"]; ok && s.Stdin == "" {
+			s.Stdin = fmt.Sprint(args["content_md"])
+			args["content_md"] = "-"
+		}
+		argv, err := ops.RenderCLI(s.Op, args)
+		if err != nil {
+			return "", nil, "", err
+		}
+		if ops.IsWriteOp(s.Op) {
+			argv = append(argv, "--yes")
+		}
+		cmd := f.CLIBin + " " + shellJoin(argv)
+		if s.Stdin != "" {
+			in, err := tmpl(s.Stdin)
+			if err != nil {
+				return "", nil, "", err
+			}
+			cmd += " <<'TWEVALS_EOF'\n" + in + "\nTWEVALS_EOF"
 		}
 		return "shell", map[string]any{"command": cmd}, "", nil
 	case s.ReadFile != "":
@@ -139,6 +195,8 @@ func (f *Fake) render(s catalog.Step, tools map[string]bool, msgs []Message) (st
 			return "", nil, "", err
 		}
 		return need(tools, "ask_user", map[string]any{"question": q})
+	case s.Resource != "":
+		return need(tools, ops.MCPPrefix+"read_resource", map[string]any{"uri": s.Resource})
 	case s.Submit != nil:
 		name := submitTool(tools)
 		if name == "" {
@@ -146,16 +204,22 @@ func (f *Fake) render(s catalog.Step, tools map[string]bool, msgs []Message) (st
 		}
 		args, err := resolveArgs(s.Submit, msgs)
 		return name, args, "", err
+	case s.Finish != nil:
+		args, err := resolveArgs(s.Finish, msgs)
+		if err != nil {
+			return "", nil, "", err
+		}
+		return need(tools, "finish", args)
 	}
 	return "", nil, "", fmt.Errorf("empty oracle step")
 }
 
-// submitTool names the arm's final-answer tool, the first by name so the
-// choice never depends on map order.
+// submitTool names the arm's submit_* tool, the first by name so the choice
+// never depends on map order. A finish step plays finish.
 func submitTool(offered map[string]bool) string {
 	var names []string
 	for n := range offered {
-		if tools.IsSubmit(n) {
+		if tools.IsSubmit(n) && n != tools.Finish {
 			names = append(names, n)
 		}
 	}
@@ -171,6 +235,53 @@ func need(tools map[string]bool, name string, args map[string]any) (string, map[
 		return "", nil, "", fmt.Errorf("this arm has no %s tool", name)
 	}
 	return name, args, "", nil
+}
+
+func (f *Fake) mcpCall(op string, args map[string]any, tools map[string]bool) (string, map[string]any, string, error) {
+	name, margs, err := ops.RenderMCP(op, args)
+	if err != nil {
+		return "", nil, "", err
+	}
+	full := ops.MCPPrefix + name
+	if !tools[full] {
+		return "", nil, "", fmt.Errorf("this arm has no MCP tool %s", name)
+	}
+	return full, margs, "", nil
+}
+
+// firstTracewayOp parses a shell command and returns its first traceway
+// invocation as an op.
+func firstTracewayOp(cmd string) (ops.Op, error) {
+	inv, err := ops.Invocations(cmd)
+	if err != nil {
+		return ops.Op{}, err
+	}
+	for _, words := range inv {
+		if words[0] == "traceway" || words[0] == "traceway-write" {
+			op := ops.ParseCLI(words[1:])
+			delete(op.Args, "output")
+			delete(op.Args, "yes")
+			return op, nil
+		}
+	}
+	return ops.Op{}, fmt.Errorf("shell step has no traceway invocation to translate for an MCP arm: %s", cmd)
+}
+
+func shellJoin(argv []string) string {
+	out := make([]string, len(argv))
+	for i, a := range argv {
+		out[i] = shellQuote(a)
+	}
+	return strings.Join(out, " ")
+}
+
+var safeWord = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,./-]+$`)
+
+func shellQuote(s string) string {
+	if s != "" && safeWord.MatchString(s) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 var runtimeRe = regexp.MustCompile(`\{\{\s*((?:last|calls\.c\d+)(?:\.[^}\s]+)?)\s*\}\}`)

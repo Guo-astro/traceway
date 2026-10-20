@@ -34,7 +34,19 @@ type Options struct {
 	Runs      int
 	Jobs      int
 	Keep      bool
-	Log       io.Writer
+	// Oracle plays each case's oracle with the fake model (free).
+	Oracle bool
+	// Chat returns the model client for real runs.
+	Chat   func(m *catalog.Model) agent.Chatter
+	Ledger *agent.Ledger
+	Judge  *grade.Judge
+	// Prices give a per-model cost estimate when the provider reports none.
+	Prices         map[string]catalog.Price
+	SandboxImage   string
+	AllowHostTests bool
+	Log            io.Writer
+	// Skip lists run keys (case/arm/model/rN) already finished (resume).
+	Skip map[string]bool
 }
 
 // Result is one run's outcome (results.json "runs" entries).
@@ -46,7 +58,7 @@ type Result struct {
 	ModelID    string           `json:"modelId"`
 	Providers  []string         `json:"provider,omitempty"`
 	RunIdx     int              `json:"runIdx"`
-	Status     string           `json:"status"` // pass | fail | budget_exhausted | infra_error
+	Status     string           `json:"status"` // pass | fail | budget_exhausted | infra_error | cost_ceiling
 	Graders    []*grade.Verdict `json:"graders"`
 	Metrics    Metrics          `json:"metrics"`
 	Transcript string           `json:"transcript,omitempty"`
@@ -54,7 +66,7 @@ type Result struct {
 	Seed       *seed.Stats      `json:"seed,omitempty"`
 }
 
-// Key identifies the run.
+// Key identifies the run for resume.
 func (r *Result) Key() string { return RunKey(r.Case, r.Arm, r.Model, r.RunIdx) }
 
 // RunKey builds a run key.
@@ -72,6 +84,7 @@ type Metrics struct {
 	CacheWriteTokens int      `json:"cacheWriteTokens"`
 	OutputTokens     int      `json:"outputTokens"`
 	CostUSD          float64  `json:"costUsd"`
+	JudgeCostUSD     float64  `json:"judgeCostUsd"`
 	WallMs           int64    `json:"wallMs"`
 	SkillLoaded      bool     `json:"skillLoaded"`
 	Skills           []string `json:"skills,omitempty"`
@@ -97,8 +110,9 @@ func Jobs(units []catalog.Unit, models []*catalog.Model, runs int) []Job {
 	return out
 }
 
-// Execute runs every job with up to Jobs in parallel. Every run plays its
-// case's oracle with the fake model.
+// Execute runs every job with up to Jobs in parallel. Before each run starts
+// it checks the ledger: at the ceiling, in-flight runs finish, nothing new
+// starts, and the remaining runs are recorded as cost_ceiling.
 func Execute(ctx context.Context, opt Options, jobs []Job) []*Result {
 	par := opt.Jobs
 	if par <= 0 {
@@ -107,17 +121,44 @@ func Execute(ctx context.Context, opt Options, jobs []Job) []*Result {
 	results := make([]*Result, len(jobs))
 	sem := make(chan struct{}, par)
 	var wg sync.WaitGroup
+	perRun := 0.0
+	if opt.Ledger != nil && opt.Ledger.Cap > 0 && len(jobs) > 0 {
+		perRun = opt.Ledger.Cap / float64(len(jobs)) * 3
+	}
 	for i, j := range jobs {
+		key := RunKey(j.Unit.Case.ID, j.Unit.Arm, j.Model.Key, j.Idx)
+		if opt.Skip[key] {
+			continue
+		}
 		sem <- struct{}{}
+		if opt.Ledger != nil && opt.Ledger.Exhausted() {
+			<-sem
+			results[i] = &Result{Case: j.Unit.Case.ID, Suite: j.Unit.Case.Suite, Arm: j.Unit.Arm, Model: j.Model.Key, ModelID: j.Model.ID, RunIdx: j.Idx,
+				Status: agent.StopCeiling, Error: "not started: the --max-cost-usd ceiling was reached"}
+			continue
+		}
 		wg.Add(1)
 		go func(i int, j Job) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			results[i] = runOne(ctx, opt, j)
+			// Each run may use up to three times its even share, but no more
+			// than its slice of what is left, so the runs in flight cannot
+			// together overshoot the ceiling by much.
+			cap := perRun
+			if opt.Ledger != nil && cap > 0 {
+				cap = min(cap, opt.Ledger.Remaining()/float64(par))
+			}
+			results[i] = runOne(ctx, opt, j, cap)
 		}(i, j)
 	}
 	wg.Wait()
-	return results
+	var out []*Result
+	for _, r := range results {
+		if r != nil {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func logf(opt Options, format string, a ...any) {
@@ -128,17 +169,35 @@ func logf(opt Options, format string, a ...any) {
 
 // surface is what the arm hands the agent.
 type surface struct {
-	cliBin  string // executable path of the traceway CLI
-	cliName string // traceway
-	cliHome *env.CLIHome
-	skills  []string
-	submit  string
+	cliBin     string // executable path for CLI arms
+	cliName    string // traceway | traceway-write
+	cliHome    *env.CLIHome
+	mcp        *tools.MCPBridge
+	skills     []string
+	submit     string
+	setupShell bool
+	// containerEnv is the setup shell's environment (tokens, URL, PORT).
+	containerEnv []string
 }
 
-func runOne(ctx context.Context, opt Options, j Job) (res *Result) {
+func submitFor(suite string) string {
+	switch suite {
+	case "perf":
+		return tools.SubmitPerf
+	case "debug":
+		return tools.SubmitDebug
+	default:
+		return tools.Finish
+	}
+}
+
+func runOne(ctx context.Context, opt Options, j Job, runCap float64) (res *Result) {
 	c := j.Unit.Case
 	arm := j.Unit.Arm
 	res = &Result{Case: c.ID, Suite: c.Suite, Arm: arm, Model: j.Model.Key, ModelID: j.Model.ID, RunIdx: j.Idx}
+	if opt.Oracle {
+		res.Model, res.ModelID = "oracle", "fake"
+	}
 	started := time.Now()
 	dir := filepath.Join(opt.OutDir, "runs", c.ID, sanitize(arm), res.Model, fmt.Sprintf("r%d", j.Idx))
 	defer func() {
@@ -189,13 +248,21 @@ func runOne(ctx context.Context, opt Options, j Job) (res *Result) {
 	stats := sc.Stats()
 	res.Seed = &stats
 	projects := sink.Projects()
-	if len(projects) == 0 {
+	if len(projects) == 0 && c.Suite != "setup" {
 		return infra(fmt.Errorf("seed %s created no project", c.Seed))
 	}
 	exposed := sc.Exposed()
 	primary := primaryProject(exposed, projects)
 
-	vars := map[string]any{"seed": jsonify(exposed), "env": envVars(inst, projects, primary, sc.Now)}
+	envv := envVars(inst, projects, primary, sc.Now)
+	if c.Setup != nil && c.Setup.Token == "setup" {
+		tok, err := env.SetupToken(ctx, inst.Backend, inst.Admin)
+		if err != nil {
+			return infra(err)
+		}
+		envv["setupToken"] = tok
+	}
+	vars := map[string]any{"seed": jsonify(exposed), "env": envv}
 	resolved, err := c.Resolve(vars)
 	if err != nil {
 		return infra(err)
@@ -206,12 +273,22 @@ func runOne(ctx context.Context, opt Options, j Job) (res *Result) {
 	if err := buildWorkspace(opt.EvalsRoot, resolved.Workspace.Repo, work, sc.Now); err != nil {
 		return infra(err)
 	}
-	surf, err := prepareSurface(ctx, opt, resolved, arm, inst, primary, dir)
+	surf, cleanup, err := prepareSurface(ctx, opt, resolved, arm, inst, projects, primary, dir, work)
+	if cleanup != nil {
+		defer cleanup()
+	}
 	if err != nil {
 		return infra(err)
 	}
 	if err := installSkills(opt.RepoRoot, work, surf.skills); err != nil {
 		return infra(err)
+	}
+	if surf.setupShell {
+		port, err := env.FreePort()
+		if err != nil {
+			return infra(err)
+		}
+		surf.containerEnv = setupEnv(resolved, inst, projects, port)
 	}
 
 	sb := &tools.Sandbox{Root: work, ReadOnly: []string{".skills"}}
@@ -231,15 +308,29 @@ func runOne(ctx context.Context, opt Options, j Job) (res *Result) {
 		}
 		return false, false
 	}
-	sh := &tools.Shell{Sandbox: sb, Git: true, Denied: deniedFor()}
-	sh.Bins = map[string]string{surf.cliName: surf.cliBin}
-	sh.BinEnv = surf.cliHome.Env(filepath.Dir(surf.cliBin))
-	toolset = append(toolset, sh)
+	if surf.setupShell {
+		cs, err := startContainerShell(ctx, opt, work, surf)
+		if err != nil {
+			return infra(err)
+		}
+		defer cs.Close()
+		toolset = append(toolset, cs)
+	} else {
+		sh := &tools.Shell{Sandbox: sb, Git: true, Denied: deniedFor(arm)}
+		if surf.cliHome != nil {
+			sh.Bins = map[string]string{surf.cliName: surf.cliBin}
+			sh.BinEnv = surf.cliHome.Env(filepath.Dir(surf.cliBin))
+		}
+		toolset = append(toolset, sh)
+	}
 	toolset = append(toolset, &tools.ReadFile{Sandbox: sb}, &tools.ListFiles{Sandbox: sb}, &tools.Search{Sandbox: sb},
 		&tools.EditFile{Sandbox: sb}, &tools.WriteFile{Sandbox: sb}, ask)
 	skillDefs, _ := tools.LoadSkills(filepath.Join(work, ".skills"))
 	if len(skillDefs) > 0 {
 		toolset = append(toolset, &tools.LoadSkill{Skills: skillDefs, Rel: sb.Rel, Loaded: &loaded})
+	}
+	if surf.mcp != nil {
+		toolset = append(toolset, surf.mcp.Tools()...)
 	}
 	submit = &tools.Submit{Kind: surf.submit, CallExists: callExists, MaxRepairs: 2}
 	toolset = append(toolset, submit)
@@ -260,11 +351,19 @@ func runOne(ctx context.Context, opt Options, j Job) (res *Result) {
 	}
 	system := agent.SystemPrompt(agent.PromptInput{
 		SubmitTool: surf.submit, Skills: skillDefs, Preloaded: preloaded,
-		Environment: environmentNote(surf, inst, primary),
+		MCPInstructions: mcpInstructions(surf), Environment: environmentNote(surf, inst, primary),
 	})
 
-	fake := agent.NewFake(resolved.OracleFor(arm), filepath.Join(opt.EvalsRoot, "testdata"))
-	defer fake.Close()
+	var chat agent.Chatter
+	var fake *agent.Fake
+	if opt.Oracle {
+		steps := resolved.OracleFor(arm)
+		fake = agent.NewFake(steps, surf.cliName, filepath.Join(opt.EvalsRoot, "testdata"))
+		defer fake.Close()
+		chat = fake.Client()
+	} else {
+		chat = opt.Chat(j.Model)
+	}
 	tr, err := agent.OpenTranscript(filepath.Join(dir, "transcript.jsonl"))
 	if err != nil {
 		return infra(err)
@@ -272,13 +371,22 @@ func runOne(ctx context.Context, opt Options, j Job) (res *Result) {
 	defer tr.Close()
 	res.Transcript, _ = filepath.Rel(opt.OutDir, filepath.Join(dir, "transcript.jsonl"))
 
+	hooks := newHookRunner(resolved, inst, primary, sink)
+	stopApprover := startDraftApprover(ctx, resolved, inst)
+	defer stopApprover()
+
+	model := j.Model
+	if opt.Oracle {
+		model = &catalog.Model{Key: "oracle", ID: "fake/oracle", Caching: "none"}
+	}
 	run := agent.Run(ctx, agent.Config{
-		Model: j.Model, Chat: fake.Client(), Tools: toolset, System: system, Prompt: prompt, SubmitTool: surf.submit,
-		Budget: resolved.Budget, Transcript: tr,
+		Model: model, Chat: chat, Tools: toolset, System: system, Prompt: prompt, SubmitTool: surf.submit,
+		Budget: resolved.Budget, RunCap: runCap, Ledger: opt.Ledger, Price: opt.Prices[j.Model.Key], Transcript: tr,
 		AfterCall: func(ctx context.Context, cl *record.Call) {
 			callsMu.Lock()
 			calls = append(calls, cl)
 			callsMu.Unlock()
+			hooks.after(ctx, cl)
 		},
 		Questions:   ask.Questions,
 		SkillLoaded: func() []string { return loaded },
@@ -287,27 +395,49 @@ func runOne(ctx context.Context, opt Options, j Job) (res *Result) {
 
 	res.Providers = run.Providers
 	res.Metrics = metricsOf(run)
-	if errs := fake.Errors(); len(errs) > 0 {
-		res.Error = "oracle: " + strings.Join(errs, "; ")
+	if fake != nil {
+		if errs := fake.Errors(); len(errs) > 0 {
+			res.Error = "oracle: " + strings.Join(errs, "; ")
+		}
 	}
-	if run.StopReason == agent.StopInfra {
+	switch run.StopReason {
+	case agent.StopInfra:
 		res.Status, res.Error = agent.StopInfra, run.StopDetail
+		return res
+	case agent.StopCeiling:
+		res.Status, res.Error = agent.StopCeiling, run.StopDetail
 		return res
 	}
 
-	in := &grade.Input{Case: resolved, Arm: arm, Run: run, Seed: jsonify(exposed)}
+	in := &grade.Input{
+		Case: resolved, Arm: arm, Run: run, Seed: jsonify(exposed), Workspace: work,
+		State: &stateReader{inst: inst, projects: projects, primary: primary}, FakeModel: opt.Oracle,
+		AllowHostTests: opt.AllowHostTests, SandboxImage: opt.SandboxImage, EvalsRoot: opt.EvalsRoot, Judge: opt.Judge,
+	}
+	if resolved.Setup != nil && resolved.Setup.Verify != nil {
+		if v := verifySetup(ctx, opt, resolved, work, inst, projects, surf); v != nil {
+			res.Graders = append(res.Graders, v)
+		}
+	}
 	res.Graders = append(res.Graders, grade.All(ctx, in)...)
+	for _, v := range res.Graders {
+		res.Metrics.JudgeCostUSD += v.CostUSD
+	}
 	switch {
 	case run.StopReason == agent.StopBudget:
 		res.Status = "budget_exhausted"
-	case res.Error != "":
+	case res.Error != "" && opt.Oracle:
 		res.Status = "fail"
 	case grade.Passed(res.Graders):
 		res.Status = "pass"
 	default:
 		res.Status = "fail"
 	}
-	logf(opt, "  %s %s (%d calls)", RunKey(c.ID, arm, res.Model, j.Idx), res.Status, res.Metrics.ToolCalls)
+	if opt.Oracle {
+		logf(opt, "  %s %s (%d calls)", RunKey(c.ID, arm, res.Model, j.Idx), res.Status, res.Metrics.ToolCalls)
+	} else {
+		logf(opt, "  %s %s (%d calls, $%.4f)", RunKey(c.ID, arm, res.Model, j.Idx), res.Status, res.Metrics.ToolCalls, res.Metrics.CostUSD)
+	}
 	return res
 }
 
@@ -373,16 +503,39 @@ func metricsOf(run *record.Run) Metrics {
 	return m
 }
 
-func deniedFor() map[string]string {
+func deniedFor(arm string) map[string]string {
 	d := map[string]string{
 		"curl": "no network tools in this sandbox", "wget": "no network tools in this sandbox",
 		"python": "no interpreters in this sandbox", "python3": "no interpreters in this sandbox", "node": "no interpreters in this sandbox",
 		"bash": "this shell already is the interpreter; run the command directly", "sh": "this shell already is the interpreter; run the command directly",
 	}
-	d["traceway-write"] = "traceway-write is not installed on this machine"
+	switch {
+	case catalog.IsMCPArm(arm):
+		d["traceway"] = "the traceway CLI is not installed on this machine; use the connected Traceway MCP tools"
+		d["traceway-write"] = d["traceway"]
+	case arm == catalog.ArmCLIWriteSkill:
+		d["traceway"] = "not installed here; use traceway-write, which has every read command too"
+	default:
+		d["traceway-write"] = "traceway-write is not installed on this machine"
+	}
 	return d
 }
 
+func mcpInstructions(s surface) string {
+	if s.mcp == nil {
+		return ""
+	}
+	return s.mcp.Instructions
+}
+
 func environmentNote(s surface, inst *env.Instance, primary env.Project) string {
-	return fmt.Sprintf("The %s CLI is installed and logged in to the team's Traceway instance at %s, with the %q project selected.", s.cliName, inst.Backend.URL, primary.Name)
+	switch {
+	case s.setupShell:
+		return "This is the developer's machine. The shell has go, node, npm, python3, pip, git and curl, and the traceway CLI (not logged in). Package registries are reachable. The team's Traceway instance runs at " + inst.Backend.URL + "."
+	case s.mcp != nil:
+		return fmt.Sprintf("A Traceway MCP server for the team's instance (%s) is connected. Its tools default to the %q project when you omit project_id.", inst.Backend.URL, primary.Name)
+	case s.cliHome != nil:
+		return fmt.Sprintf("The %s CLI is installed and logged in to the team's Traceway instance at %s, with the %q project selected.", s.cliName, inst.Backend.URL, primary.Name)
+	}
+	return ""
 }
