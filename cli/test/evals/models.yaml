@@ -1,0 +1,61 @@
+# Pinned OpenRouter models for the eval agents and the judge, for paid runs
+# through OpenRouter Chat Completions. This harness makes no paid calls: it
+# plays oracles with the fake model and only records these ids in the
+# results header.
+#
+# Never use a floating alias (~provider/model-latest): results must stay
+# comparable over time, so a model change is a reviewed edit to this file.
+# Prices and supported_parameters were checked against
+# GET https://openrouter.ai/api/v1/models on 2026-10-17.
+#
+# estimate (a per-run token envelope) and fallback_price (USD per million
+# tokens) are for estimating a paid run's cost before it starts.
+
+agents:
+  opus:
+    id: anthropic/claude-opus-5.5
+    label: Claude Opus 5.5
+    provider:
+      # Anthropic first so the explicit prompt cache keeps hitting the same
+      # upstream; fallbacks stay allowed so one provider outage is not a
+      # failed run (the serving provider is recorded per run).
+      order: [anthropic]
+      allow_fallbacks: true
+    caching: anthropic
+    reasoning_effort: medium
+    max_tokens_per_turn: 16000
+    estimate:
+      input_tokens: [100000, 400000]
+      cached_fraction: 0.7
+      output_tokens: [5000, 15000]
+    fallback_price: {prompt: 4.00, completion: 20.00, cache_read: 0.20, cache_write: 5.00}
+
+  astra:
+    id: openai/gpt-6-astra
+    label: GPT-6 Astra
+    provider:
+      order: [openai]
+      allow_fallbacks: true
+    caching: automatic
+    reasoning_effort: medium
+    max_tokens_per_turn: 16000
+    estimate:
+      input_tokens: [100000, 400000]
+      cached_fraction: 0.7
+      output_tokens: [5000, 15000]
+    fallback_price: {prompt: 10.00, completion: 50.00, cache_read: 1.00, cache_write: 12.50}
+
+judge:
+  id: anthropic/claude-haiku-5.5
+  label: Claude Haiku 5.5 (judge)
+  provider:
+    order: [anthropic]
+    allow_fallbacks: true
+  caching: none
+  max_tokens_per_turn: 2000
+  temperature: 0
+  estimate:
+    input_tokens: [6000, 15000]
+    cached_fraction: 0
+    output_tokens: [300, 1200]
+  fallback_price: {prompt: 0.10, completion: 0.50, cache_read: 0.01, cache_write: 0.125}

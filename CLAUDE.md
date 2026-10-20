@@ -34,6 +34,7 @@ Traceway is an error tracking and monitoring platform consisting of:
 | CLI | `cd cli && just test` | Runs unit tests |
 | CLI | `cd cli && just check` | Lint + test + vulncheck + skill drift + contract tests (pre-commit gate; CI enforces it for `cli/`) |
 | CLI | `cd cli && just smoke-test` | Live E2E (needs `TRACEWAY_SMOKE_*` env vars) |
+| CLI | `cd cli && just eval-harness` | Eval harness tests plus every case's oracle trajectory, fake model only ($0) |
 | Any | `nix develop` (or direnv via `.envrc`) | Dev shell with the Go and Node versions read from `backend/go.mod` and `.nvmrc`, plus `just`, `golangci-lint`, `govulncheck` (`flake.nix`; shells `default`, `backend`, `frontend`, `oxc`). Put `JWT_SECRET` in the gitignored `.envrc.local` |
 | Any | `./scripts/check-node-pins.sh` | Asserts every Dockerfile's `ARG NODE_VERSION` default matches `.nvmrc`; run by `release-traceway.yml` before it builds |
 
