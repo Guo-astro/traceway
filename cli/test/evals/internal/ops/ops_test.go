@@ -30,15 +30,33 @@ func TestOpsMatchToolMap(t *testing.T) {
 }
 
 // TestEveryCLICommandMaps walks both built editions' help: every leaf
-// command must map to an op, and write-edition commands must be writes.
+// command must map to an op, and exactly the commands only traceway-write
+// has are marked WriteEdition, as writes.
 func TestEveryCLICommandMaps(t *testing.T) {
 	bins := env.BinariesForTest(t)
-	for _, bin := range []string{bins.CLI, bins.CLIWrite} {
-		for _, path := range leafCommands(t, bin, nil) {
-			op := ParseCLI(path)
-			if op.Op == OpUnknownCLI {
-				t.Errorf("%s %v maps to no op", bin, path)
-			}
+	inRead := map[string]bool{}
+	for _, path := range leafCommands(t, bins.CLI, nil) {
+		inRead[strings.Join(path, " ")] = true
+		op := ParseCLI(path)
+		if op.Op == OpUnknownCLI {
+			t.Errorf("traceway %v maps to no op", path)
+			continue
+		}
+		if spec, ok := SpecFor(op.Op); ok && spec.WriteEdition {
+			t.Errorf("traceway %v exists in the read edition, but %s is marked WriteEdition", path, op.Op)
+		}
+	}
+	for _, path := range leafCommands(t, bins.CLIWrite, nil) {
+		op := ParseCLI(path)
+		if op.Op == OpUnknownCLI {
+			t.Errorf("traceway-write %v maps to no op", path)
+			continue
+		}
+		if inRead[strings.Join(path, " ")] {
+			continue
+		}
+		if spec, ok := SpecFor(op.Op); !ok || !spec.WriteEdition || !op.Write {
+			t.Errorf("traceway-write %v exists only in the write edition, so %s must be WriteEdition and Write", path, op.Op)
 		}
 	}
 }

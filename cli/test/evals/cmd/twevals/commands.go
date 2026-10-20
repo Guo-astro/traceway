@@ -84,13 +84,6 @@ func (s *selFlags) bind(fs *flag.FlagSet) {
 	fs.StringVar(&s.sel.Arms, "arms", "", "comma-separated arms")
 }
 
-func (s *selFlags) selection() catalog.Selection {
-	if s.sel.Preset == "" && s.sel.Cases == "" && s.sel.Suites == "" && s.sel.Tags == "" {
-		s.sel.Preset = "smoke"
-	}
-	return s.sel
-}
-
 func cmdList(args []string) error {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 	var sf selFlags
@@ -158,6 +151,7 @@ func cmdOracle(ctx context.Context, args []string) error {
 		Runs: 1, Jobs: *jobs, Keep: *keep, Log: os.Stderr}
 	header := report.NewHeader(ws.repo, filepath.Base(outDir), ws.models, bins.Hash, os.Args)
 	header.Oracle = true
+	header.Models = map[string]string{oracleModel.Key: oracleModel.ID}
 	results := runner.Execute(ctx, opt, runner.Jobs(units, opt.Models, 1))
 	header.Finished = time.Now().UTC()
 	if err := report.Save(outDir, &report.Results{Header: header, Runs: results}); err != nil {

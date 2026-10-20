@@ -133,7 +133,7 @@ type Onset struct {
 	ToleranceMinutes int    `yaml:"tolerance_minutes"`
 }
 
-// Trajectory is the tool-call DSL (plan §6.4).
+// Trajectory is the tool-call DSL.
 type Trajectory struct {
 	Required            []CallMatcher   `yaml:"required"`
 	AnyOf               [][]CallMatcher `yaml:"any_of"`
@@ -240,6 +240,11 @@ func (c *Case) Validate() error {
 	case "", "slash", "natural":
 	default:
 		add("invoke must be slash or natural, got %q", c.Invoke)
+	}
+	// The runner preloads the skill for slash cases, and the prompt is what
+	// the agent reads, so the two must agree.
+	if slash := strings.HasPrefix(strings.TrimSpace(c.Prompt), "/"); slash != (c.Invoke == "slash") {
+		add("invoke: slash goes with a prompt that starts with /<skill>, and only with one")
 	}
 	if strings.TrimSpace(c.Prompt) == "" {
 		add("prompt is required")

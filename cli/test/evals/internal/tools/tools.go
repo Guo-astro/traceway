@@ -80,33 +80,16 @@ func (s *Sandbox) Resolve(base, p string) (string, error) {
 	} else {
 		abs = filepath.Clean(filepath.Join(base, p))
 	}
-	if !within(s.Root, abs) {
+	if !within(s.Root, abs) || !within(realPath(s.Root), realPath(abs)) {
 		return "", fmt.Errorf("%s: %w", p, ErrOutside)
-	}
-	// Resolve the longest existing prefix to catch symlink escapes.
-	probe := abs
-	for {
-		real, err := filepath.EvalSymlinks(probe)
-		if err == nil {
-			rootReal, _ := filepath.EvalSymlinks(s.Root)
-			if rootReal == "" {
-				rootReal = s.Root
-			}
-			if !within(rootReal, real) {
-				return "", fmt.Errorf("%s: %w", p, ErrOutside)
-			}
-			break
-		}
-		parent := filepath.Dir(probe)
-		if parent == probe || !within(s.Root, parent) {
-			break
-		}
-		probe = parent
 	}
 	return abs, nil
 }
 
-// Writable reports whether abs may be written.
+// Writable reports whether abs may be written. Anything under a .git
+// directory is read-only wherever it sits: git reads its config, so a write
+// there could make a git command run a program on the host. Both the path and
+// what a symlink makes of it are checked, without regard to case.
 func (s *Sandbox) Writable(abs string) error {
 	if abs == "/dev/null" {
 		return nil
@@ -115,12 +98,46 @@ func (s *Sandbox) Writable(abs string) error {
 	if err != nil {
 		return err
 	}
+	if err := s.readOnly(rel); err != nil {
+		return err
+	}
+	if real, err := filepath.Rel(realPath(s.Root), realPath(abs)); err == nil {
+		return s.readOnly(real)
+	}
+	return nil
+}
+
+func (s *Sandbox) readOnly(rel string) error {
+	rel = filepath.ToSlash(rel)
+	lower := strings.ToLower(rel)
+	for _, part := range strings.Split(lower, "/") {
+		if part == ".git" {
+			return fmt.Errorf("%s is read-only", rel)
+		}
+	}
 	for _, ro := range s.ReadOnly {
-		if rel == ro || strings.HasPrefix(rel, ro+string(filepath.Separator)) {
-			return fmt.Errorf("%s is read-only", filepath.ToSlash(rel))
+		ro = strings.ToLower(ro)
+		if lower == ro || strings.HasPrefix(lower, ro+"/") {
+			return fmt.Errorf("%s is read-only", rel)
 		}
 	}
 	return nil
+}
+
+// realPath resolves the symlinks in the longest existing prefix of p.
+func realPath(p string) string {
+	rest := ""
+	for probe := p; ; {
+		if real, err := filepath.EvalSymlinks(probe); err == nil {
+			return filepath.Join(real, rest)
+		}
+		parent := filepath.Dir(probe)
+		if parent == probe {
+			return p
+		}
+		rest = filepath.Join(filepath.Base(probe), rest)
+		probe = parent
+	}
 }
 
 // Rel returns the workspace-relative form of abs.

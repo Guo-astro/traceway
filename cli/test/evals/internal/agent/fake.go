@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/tracewayapp/traceway/cli/test/evals/internal/catalog"
+	"github.com/tracewayapp/traceway/cli/test/evals/internal/tools"
 )
 
 // Fake is an httptest server speaking Chat Completions that plays a case's
@@ -138,15 +140,30 @@ func (f *Fake) render(s catalog.Step, tools map[string]bool, msgs []Message) (st
 		}
 		return need(tools, "ask_user", map[string]any{"question": q})
 	case s.Submit != nil:
-		for name := range tools {
-			if strings.HasPrefix(name, "submit_") {
-				args, err := resolveArgs(s.Submit, msgs)
-				return name, args, "", err
-			}
+		name := submitTool(tools)
+		if name == "" {
+			return "", nil, "", fmt.Errorf("no submit tool on this arm")
 		}
-		return "", nil, "", fmt.Errorf("no submit tool on this arm")
+		args, err := resolveArgs(s.Submit, msgs)
+		return name, args, "", err
 	}
 	return "", nil, "", fmt.Errorf("empty oracle step")
+}
+
+// submitTool names the arm's final-answer tool, the first by name so the
+// choice never depends on map order.
+func submitTool(offered map[string]bool) string {
+	var names []string
+	for n := range offered {
+		if tools.IsSubmit(n) {
+			names = append(names, n)
+		}
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return ""
+	}
+	return names[0]
 }
 
 func need(tools map[string]bool, name string, args map[string]any) (string, map[string]any, string, error) {
@@ -168,9 +185,25 @@ func resolveRuntime(s string, msgs []Message) (string, error) {
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
-		return fmt.Sprint(v)
+		return runtimeText(v)
 	})
 	return out, firstErr
+}
+
+// runtimeText renders a looked-up value inside a string as it reads in the
+// tool output: numbers as their JSON text (never 4.52e+07), objects as JSON.
+func runtimeText(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case json.Number:
+		return t.String()
+	case map[string]any, []any:
+		raw, _ := json.Marshal(t)
+		return string(raw)
+	default:
+		return fmt.Sprint(t)
+	}
 }
 
 func resolveArgs(in map[string]any, msgs []Message) (map[string]any, error) {
@@ -256,8 +289,15 @@ func lookupRuntime(expr string, msgs []Message) (any, error) {
 	if path == "" {
 		return body, nil
 	}
+	// UseNumber keeps numbers as written: a nanosecond timestamp does not
+	// survive a float64.
 	var v any
-	if err := json.Unmarshal([]byte(firstJSON(body)), &v); err != nil {
+	dec := json.NewDecoder(strings.NewReader(firstJSON(body)))
+	dec.UseNumber()
+	if err := dec.Decode(&v); err != nil {
+		return nil, fmt.Errorf("template %s: result is not JSON", expr)
+	}
+	if _, err := dec.Token(); err != io.EOF {
 		return nil, fmt.Errorf("template %s: result is not JSON", expr)
 	}
 	for _, seg := range splitPath(path) {

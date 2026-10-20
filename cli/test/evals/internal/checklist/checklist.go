@@ -29,7 +29,7 @@ var (
 	checklist     []Row
 )
 
-// Checklist parses the canonical performance.md once. The enum therefore
+// Rows parses the canonical performance.md once. The enum therefore
 // tracks the skill: renaming a row renames its id, and the case test fails.
 func Rows() []Row {
 	checklistOnce.Do(func() { checklist = ParseChecklist(knowledge.MustRead("performance.md")) })

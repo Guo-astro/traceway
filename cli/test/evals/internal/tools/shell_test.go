@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -45,6 +46,12 @@ func TestShellUtilities(t *testing.T) {
 		{`grep -c beta notes.txt`, "2"},
 		{`wc -l < notes.txt`, "4"},
 		{`X=$(echo nested); echo "got $X"`, "got nested"},
+		{`printf 'M\nx\nM\ny\nz\n' | grep -A3 M | tr '\n' ,`, "M,x,M,y,z,"},
+		{`printf 'M\na\nb\nc\nM\n' | grep -A1 M | tr '\n' ,`, "M,a,--,M,"},
+		{`printf 'a\nb\nM\nc\n' | grep -B1 -n M | tr '\n' ,`, "2-b,3:M,"},
+		{`grep -e alpha -e gamma notes.txt | wc -l`, "2"},
+		{`echo '{"a":"x"}' | jq .a -r`, "x"},
+		{`echo '{"a":{"b":1}}' | jq -c .a`, `{"b":1}`},
 	}
 	for _, c := range cases {
 		r := run(t, s, c.cmd)
@@ -77,6 +84,15 @@ func TestShellConfinement(t *testing.T) {
 	}
 }
 
+// TestShellDevNullIsNotAWrite: discarding stderr is not a file operation,
+// so it never counts toward the trajectory grader's repeat limit.
+func TestShellDevNullIsNotAWrite(t *testing.T) {
+	s, _ := newShell(t)
+	if r := run(t, s, `grep beta notes.txt 2>/dev/null >/dev/null`); !r.OK || len(r.Ops) != 0 {
+		t.Fatalf("ok=%v ops=%+v", r.OK, r.Ops)
+	}
+}
+
 func TestShellRecordsTracewayInPipelines(t *testing.T) {
 	s, _ := newShell(t)
 	r := run(t, s, `traceway endpoints list --since 24h --order-by p95 --output json | jq -r '.data[0].endpoint'`)
@@ -95,7 +111,7 @@ func TestShellRecordsTracewayInPipelines(t *testing.T) {
 	}
 }
 
-// TestToolEnvIsScrubbed asserts plan §3.5: secrets in the harness's own
+// TestToolEnvIsScrubbed asserts that secrets in the harness's own
 // environment never reach tool subprocesses.
 func TestToolEnvIsScrubbed(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "sk-or-secret")
@@ -140,5 +156,78 @@ func TestAskUserRules(t *testing.T) {
 	a := &AskUser{}
 	if got := a.Answer("anything"); !strings.Contains(got, "anything to add") {
 		t.Fatal(got)
+	}
+}
+
+// TestShellGitIsReadOnly holds git to the workspace: no config written into
+// the workspace can make git run a command on the host, and no argument reads
+// or writes a file outside it (the run directory around it holds seed.json).
+func TestShellGitIsReadOnly(t *testing.T) {
+	s, work := newShell(t)
+	s.Git = true
+	outside := filepath.Dir(work)
+	os.WriteFile(filepath.Join(outside, "seed.json"), []byte("answer-key"), 0o644)
+	for _, args := range [][]string{{"init", "-q"}, {"add", "notes.txt"}, {"-c", "user.email=x@y", "-c", "user.name=x", "commit", "-qm", "init"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = work
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git unavailable: %v %s", err, out)
+		}
+	}
+	const hook = `[core]\n\tfsmonitor = \"echo x > ` + "`" + `pwd` + "`" + `/../PWNED; false\"\n[diff]\n\texternal = \"echo x > ../PWNED; false\"\n`
+	write := &WriteFile{Sandbox: s.Sandbox}
+	for _, path := range []string{".git/config", ".GIT/config", "sub/.git/config", "bare/config"} {
+		res := write.Call(context.Background(), json.RawMessage(`{"path":"`+path+`","content":"`+hook+`"}`))
+		if strings.HasSuffix(path, ".git/config") || strings.HasSuffix(path, ".GIT/config") {
+			if res.OK {
+				t.Errorf("write_file wrote %s", path)
+			}
+		}
+	}
+	if r := run(t, s, `printf '[core]\n\tfsmonitor = "echo x > ../PWNED; false"\n' >> .git/config`); r.OK {
+		t.Errorf("the shell wrote .git/config: %q", r.Output)
+	}
+	// A bare repository's layout in a subdirectory, which git would otherwise
+	// discover and take its config from.
+	for _, f := range []string{"HEAD", "objects/x", "refs/x"} {
+		write.Call(context.Background(), json.RawMessage(`{"path":"bare/`+f+`","content":"ref: refs/heads/main\n"}`))
+	}
+	if r := run(t, s, `cd bare && git rev-parse --absolute-git-dir`); strings.TrimSpace(r.Output) != filepath.Join(work, ".git") {
+		t.Errorf("git in bare/ used %q, want the workspace repository", r.Output)
+	}
+	for _, cmd := range []string{`git status`, `git diff`, `git log -p -1`, `git show HEAD`, `cd sub && git status`} {
+		run(t, s, cmd)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "PWNED")); err == nil {
+		t.Error("a git command ran a command written into the workspace")
+	}
+	for _, cmd := range []string{
+		`git diff --no-index ../seed.json /dev/null`,
+		`git diff --no-index -- ../seed.json /dev/null`,
+		`git diff ../seed.json /dev/null`,
+		`git diff -- ` + filepath.Join(outside, "seed.json") + ` /dev/null`,
+		`git blame --contents ../seed.json notes.txt`,
+		`git blame --contents=../seed.json notes.txt`,
+		`git log -pO../seed.json -1`,
+		`git log --output=../out.txt -1`,
+		`git diff --output ../out.txt HEAD`,
+		`git log --ext-diff -p -1`,
+		`git --exec-path=.. status`,
+		`git --config-env=core.fsmonitor=HOME status`,
+		`git -c core.pager=cat log`,
+		`cd .. && git diff seed.json /dev/null`,
+	} {
+		r := run(t, s, cmd)
+		if r.OK || strings.Contains(r.Output, "answer-key") {
+			t.Errorf("%s: ok=%v %q", cmd, r.OK, r.Output)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(outside, "out.txt")); err == nil {
+		t.Error("git wrote a file outside the workspace")
+	}
+	for _, cmd := range []string{`git log --oneline | wc -l`, `git --no-pager log --oneline -S/api/orders | wc -l`, `git log --format=%s -- notes.txt`, `cd .skills && git status --short`} {
+		if r := run(t, s, cmd); !r.OK {
+			t.Errorf("%s: %q", cmd, r.Output)
+		}
 	}
 }

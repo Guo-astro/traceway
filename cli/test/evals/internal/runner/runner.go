@@ -72,7 +72,6 @@ type Metrics struct {
 	CacheWriteTokens int      `json:"cacheWriteTokens"`
 	OutputTokens     int      `json:"outputTokens"`
 	CostUSD          float64  `json:"costUsd"`
-	JudgeCostUSD     float64  `json:"judgeCostUsd"`
 	WallMs           int64    `json:"wallMs"`
 	SkillLoaded      bool     `json:"skillLoaded"`
 	Skills           []string `json:"skills,omitempty"`
@@ -134,17 +133,6 @@ type surface struct {
 	cliHome *env.CLIHome
 	skills  []string
 	submit  string
-}
-
-func submitFor(suite string) string {
-	switch suite {
-	case "perf":
-		return tools.SubmitPerf
-	case "debug":
-		return tools.SubmitDebug
-	default:
-		return tools.Finish
-	}
 }
 
 func runOne(ctx context.Context, opt Options, j Job) (res *Result) {
@@ -258,7 +246,8 @@ func runOne(ctx context.Context, opt Options, j Job) (res *Result) {
 
 	prompt := strings.TrimSpace(resolved.Prompt)
 	var preloaded *tools.Skill
-	if name := agent.SlashSkill(prompt); name != "" {
+	if resolved.Invoke == "slash" {
+		name := agent.SlashSkill(prompt)
 		for i := range skillDefs {
 			if skillDefs[i].Name == name {
 				preloaded = &skillDefs[i]
@@ -308,9 +297,6 @@ func runOne(ctx context.Context, opt Options, j Job) (res *Result) {
 
 	in := &grade.Input{Case: resolved, Arm: arm, Run: run, Seed: jsonify(exposed)}
 	res.Graders = append(res.Graders, grade.All(ctx, in)...)
-	for _, v := range res.Graders {
-		res.Metrics.JudgeCostUSD += v.CostUSD
-	}
 	switch {
 	case run.StopReason == agent.StopBudget:
 		res.Status = "budget_exhausted"
@@ -321,7 +307,7 @@ func runOne(ctx context.Context, opt Options, j Job) (res *Result) {
 	default:
 		res.Status = "fail"
 	}
-	logf(opt, "  %s %s (%d calls, $%.4f)", RunKey(c.ID, arm, res.Model, j.Idx), res.Status, res.Metrics.ToolCalls, res.Metrics.CostUSD)
+	logf(opt, "  %s %s (%d calls)", RunKey(c.ID, arm, res.Model, j.Idx), res.Status, res.Metrics.ToolCalls)
 	return res
 }
 

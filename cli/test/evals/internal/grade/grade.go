@@ -20,7 +20,6 @@ type Verdict struct {
 	Score    *float64 `json:"score,omitempty"`
 	Failures []string `json:"failures,omitempty"`
 	Notes    []string `json:"notes,omitempty"`
-	CostUSD  float64  `json:"costUsd,omitempty"`
 }
 
 func (v *Verdict) fail(format string, a ...any) {
@@ -51,7 +50,7 @@ func All(ctx context.Context, in *Input) []*Verdict {
 	if in.Case.Expect.Calls != nil {
 		out = append(out, Trajectory(in.Run, in.Case.Expect.Calls))
 	}
-	if in.Case.Suite == "perf" || in.Case.Suite == "debug" || len(in.Case.Expect.Grounding) > 0 {
+	if in.Case.Suite == "perf" || len(in.Case.Expect.Grounding) > 0 {
 		out = append(out, Grounding(in))
 	}
 	if in.Case.Expect.Report != nil {

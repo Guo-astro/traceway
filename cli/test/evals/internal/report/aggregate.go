@@ -57,7 +57,6 @@ type Aggregates struct {
 	Models      []Delta           `json:"models"`
 	Cost        map[string]*Costs `json:"cost"` // by model
 	SpendUSD    float64           `json:"spendUsd"`
-	JudgeUSD    float64           `json:"judgeUsd"`
 	Statuses    map[string]int    `json:"statuses"`
 	TopFailing  []GraderCount     `json:"topFailingGraders"`
 }
@@ -81,8 +80,7 @@ func Aggregate(runs []*runner.Result) Aggregates {
 	cacheIn, cacheHit := map[string]int{}, map[string]int{}
 	for _, r := range runs {
 		a.Statuses[r.Status]++
-		a.SpendUSD += r.Metrics.CostUSD + r.Metrics.JudgeCostUSD
-		a.JudgeUSD += r.Metrics.JudgeCostUSD
+		a.SpendUSD += r.Metrics.CostUSD
 		c := a.Cost[r.Model]
 		if c == nil {
 			c = &Costs{}

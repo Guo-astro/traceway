@@ -74,7 +74,16 @@ func (t *ReadFile) Call(_ context.Context, raw json.RawMessage) Result {
 		fmt.Fprintf(&b, "[%d more lines; continue with offset %d]\n", len(lines)-(start+limit)+1, start+limit)
 	}
 	out, trunc := Cap(b.String())
-	return Result{Output: out, OK: true, Truncated: trunc, Ops: []record.OpRecord{{Op: ops.Op{Op: ops.OpReadFile, Args: map[string]any{"path": rel}}, OK: true, Output: text}}}
+	// The window is part of the operation, so reading a long file in chunks
+	// is not the same call repeated.
+	args := map[string]any{"path": rel}
+	if start > 1 {
+		args["offset"] = start
+	}
+	if in.Limit > 0 {
+		args["limit"] = in.Limit
+	}
+	return Result{Output: out, OK: true, Truncated: trunc, Ops: []record.OpRecord{{Op: ops.Op{Op: ops.OpReadFile, Args: args}, OK: true, Output: text}}}
 }
 
 // ListFiles lists files under a directory.

@@ -99,14 +99,16 @@ func coreutilNames() []string {
 }
 
 // flags is a tiny getopt: single-dash letters (bundled), --long, and
-// options that take a value.
+// options that take a value. set keeps an option's last value, vals every
+// value of a repeatable one (grep -e A -e B).
 type flags struct {
 	set  map[string]string
+	vals map[string][]string
 	args []string
 }
 
 func parseFlags(args []string, withValue string) flags {
-	f := flags{set: map[string]string{}}
+	f := flags{set: map[string]string{}, vals: map[string][]string{}}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {
@@ -131,6 +133,7 @@ func parseFlags(args []string, withValue string) flags {
 						v = args[i]
 					}
 					f.set[c] = v
+					f.vals[c] = append(f.vals[c], v)
 					break
 				}
 				f.set[c] = "true"
@@ -281,10 +284,7 @@ func breToERE(p string) string {
 
 func uGrep(u *uctx, args []string) int {
 	f := parseFlags(args, "eABCm")
-	var patterns []string
-	if v, ok := f.set["e"]; ok {
-		patterns = append(patterns, v)
-	}
+	patterns := f.vals["e"]
 	rest := f.args
 	if len(patterns) == 0 {
 		if len(rest) == 0 {
@@ -383,6 +383,7 @@ func uGrep(u *uctx, args []string) int {
 		lines := splitLines(data)
 		count := 0
 		lastPrinted := -1
+		afterLeft := 0
 		prefix := func(i int, sep string) string {
 			p := ""
 			if multi {
@@ -393,9 +394,25 @@ func uGrep(u *uctx, args []string) int {
 			}
 			return p
 		}
+		// printLine prints line i once, with grep's "--" between context
+		// groups that are not adjacent.
+		printLine := func(i int, sep string) {
+			if (before > 0 || after > 0) && lastPrinted >= 0 && i > lastPrinted+1 {
+				fmt.Fprintln(w, "--")
+			}
+			fmt.Fprintln(w, prefix(i, sep)+lines[i])
+			lastPrinted = i
+		}
 		for i, l := range lines {
 			if !match(l) {
+				if afterLeft > 0 && !f.has("c") && !f.has("o") {
+					printLine(i, "-")
+					afterLeft--
+				}
 				continue
+			}
+			if maxCount >= 0 && count >= maxCount {
+				break
 			}
 			found = true
 			count++
@@ -407,9 +424,6 @@ func uGrep(u *uctx, args []string) int {
 				break
 			}
 			if f.has("c") {
-				if maxCount >= 0 && count >= maxCount {
-					break
-				}
 				continue
 			}
 			if f.has("o") && !f.has("v") {
@@ -418,22 +432,13 @@ func uGrep(u *uctx, args []string) int {
 						fmt.Fprintln(w, prefix(i, ":")+m)
 					}
 				}
-			} else {
-				for b := max(lastPrinted+1, i-before); b < i; b++ {
-					fmt.Fprintln(w, prefix(b, "-")+lines[b])
-				}
-				fmt.Fprintln(w, prefix(i, ":")+l)
-				lastPrinted = i
-				for a := i + 1; a <= i+after && a < len(lines); a++ {
-					if !match(lines[a]) {
-						fmt.Fprintln(w, prefix(a, "-")+lines[a])
-						lastPrinted = a
-					}
-				}
+				continue
 			}
-			if maxCount >= 0 && count >= maxCount {
-				break
+			for b := max(lastPrinted+1, i-before); b < i; b++ {
+				printLine(b, "-")
 			}
+			printLine(i, ":")
+			afterLeft = after
 		}
 		if f.has("c") {
 			if multi {

@@ -1,14 +1,15 @@
-# Pinned OpenRouter models for the eval agents and the judge. Every call goes
-# through OpenRouter Chat Completions with one key (OPENROUTER_API_KEY).
+# Pinned OpenRouter models for the eval agents and the judge, for paid runs
+# through OpenRouter Chat Completions. This harness makes no paid calls: it
+# plays oracles with the fake model and only records these ids in the
+# results header.
 #
 # Never use a floating alias (~provider/model-latest): results must stay
 # comparable over time, so a model change is a reviewed edit to this file.
 # Prices and supported_parameters were checked against
-# GET https://openrouter.ai/api/v1/models on 2026-10-17. The preflight reads live
-# prices; fallback_price is used only when that list cannot be fetched.
+# GET https://openrouter.ai/api/v1/models on 2026-10-17.
 #
-# estimate is the per-run token envelope the preflight multiplies by live
-# prices until baseline.json carries measured averages (plan §10).
+# estimate (a per-run token envelope) and fallback_price (USD per million
+# tokens) are for estimating a paid run's cost before it starts.
 
 agents:
   opus:

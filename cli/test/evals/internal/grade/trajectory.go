@@ -10,7 +10,9 @@ import (
 	"strings"
 
 	"github.com/tracewayapp/traceway/cli/test/evals/internal/catalog"
+	"github.com/tracewayapp/traceway/cli/test/evals/internal/ops"
 	"github.com/tracewayapp/traceway/cli/test/evals/internal/record"
+	"github.com/tracewayapp/traceway/cli/test/evals/internal/tools"
 )
 
 // Trajectory checks the tool calls against the case's call DSL:
@@ -81,7 +83,7 @@ func Trajectory(run *record.Run, t *catalog.Trajectory) *Verdict {
 	executed := 0
 	failed := 0
 	for _, c := range run.Calls {
-		if c.Rejected || isSubmitTool(c.Tool) {
+		if c.Rejected || tools.IsSubmit(c.Tool) {
 			continue
 		}
 		executed++
@@ -96,8 +98,13 @@ func Trajectory(run *record.Run, t *catalog.Trajectory) *Verdict {
 		v.fail("%d failed tool calls, more than max_failed_calls %d", failed, t.MaxFailedCalls)
 	}
 	if t.MaxIdenticalRepeats > 0 {
+		// Thrashing is asking the same question again. Changing a local file
+		// (several edits, or appending to one file) is not.
 		counts := map[string]int{}
 		for _, op := range all {
+			if op.Op.Op == ops.OpWriteFile || op.Op.Op == ops.OpEditFile {
+				continue
+			}
 			counts[opKey(op.OpRecord)]++
 		}
 		keys := make([]string, 0, len(counts))
@@ -113,10 +120,6 @@ func Trajectory(run *record.Run, t *catalog.Trajectory) *Verdict {
 	}
 	v.note("%d operations in %d calls (%d failed)", len(all), executed, failed)
 	return v
-}
-
-func isSubmitTool(name string) bool {
-	return name == "submit_perf_diagnosis" || name == "submit_debug_diagnosis" || name == "finish"
 }
 
 func firstMatch(all []record.CallOp, m catalog.CallMatcher) int {

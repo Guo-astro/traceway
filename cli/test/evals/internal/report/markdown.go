@@ -35,7 +35,11 @@ func Markdown(r *Results) string {
 	}
 	sort.Strings(models)
 	fmt.Fprintf(&b, "- **Models:** %s\n", strings.Join(models, ", "))
-	fmt.Fprintf(&b, "- **Spend:** $%.2f (judge $%.2f) of a $%.2f cap\n", a.SpendUSD, a.JudgeUSD, h.MaxCostUSD)
+	// An oracle run costs nothing, so its summary leaves money out.
+	paid := !h.Oracle
+	if paid {
+		fmt.Fprintf(&b, "- **Spend:** $%.2f\n", a.SpendUSD)
+	}
 	var st []string
 	for k, v := range a.Statuses {
 		st = append(st, fmt.Sprintf("%s %d", k, v))
@@ -62,16 +66,18 @@ func Markdown(r *Results) string {
 			fmt.Fprintf(&b, "| %s | %s | %s | %.0f%% | %.0f%% | %+.0fpp |\n", d.Suite, d.A, d.B, d.RateA*100, d.RateB*100, d.Delta)
 		}
 	}
-	b.WriteString("\n## Cost (averages over passing runs)\n\n| Model | Passing runs | Avg cost | Avg tool calls | Avg input tokens | Avg output tokens | Cache hit rate | Total spend |\n|---|---|---|---|---|---|---|---|\n")
-	for _, m := range sortedKeys(a.Cost) {
-		c := a.Cost[m]
-		fmt.Fprintf(&b, "| %s | %d | $%.3f | %.1f | %.0f | %.0f | %.0f%% | $%.2f |\n", m, c.PassingRuns, c.AvgCostUSD, c.AvgToolCalls, c.AvgInputTokens, c.AvgOutputTokens, c.CacheHitRate*100, c.TotalCostUSD)
+	if paid {
+		b.WriteString("\n## Cost (averages over passing runs)\n\n| Model | Passing runs | Avg cost | Avg tool calls | Avg input tokens | Avg output tokens | Cache hit rate | Total spend |\n|---|---|---|---|---|---|---|---|\n")
+		for _, m := range sortedKeys(a.Cost) {
+			c := a.Cost[m]
+			fmt.Fprintf(&b, "| %s | %d | $%.3f | %.1f | %.0f | %.0f | %.0f%% | $%.2f |\n", m, c.PassingRuns, c.AvgCostUSD, c.AvgToolCalls, c.AvgInputTokens, c.AvgOutputTokens, c.CacheHitRate*100, c.TotalCostUSD)
+		}
 	}
 	bySuiteCost := map[string]float64{}
 	for _, run := range r.Runs {
 		bySuiteCost[run.Suite+" / "+run.Model] += run.Metrics.CostUSD
 	}
-	if len(bySuiteCost) > 0 {
+	if paid && len(bySuiteCost) > 0 {
 		b.WriteString("\n| Suite / model | Spend |\n|---|---|\n")
 		for _, k := range sortedKeys(bySuiteCost) {
 			fmt.Fprintf(&b, "| %s | $%.2f |\n", k, bySuiteCost[k])
@@ -92,11 +98,22 @@ func Markdown(r *Results) string {
 			fmt.Fprintf(&b, "| %s | %s | %s | %d/%d |\n", cs, m, arm, v.Pass, v.Total)
 		}
 	}
-	b.WriteString("\n## Runs\n\n| Case | Arm | Model | Run | Status | Calls | Cost | First failure |\n|---|---|---|---|---|---|---|---|\n")
-	for _, run := range r.Runs {
-		fmt.Fprintf(&b, "| %s | %s | %s | %d | %s | %d | $%.3f | %s |\n", run.Case, run.Arm, run.Model, run.RunIdx, run.Status, run.Metrics.ToolCalls, run.Metrics.CostUSD, mdEscape(firstFailure(run)))
+	b.WriteString("\n## Runs\n\n| Case | Arm | Model | Run | Status | Calls |")
+	if paid {
+		b.WriteString(" Cost |")
 	}
-	b.WriteString("\nTranscripts are in the artifact under `runs/<case>/<arm>/<model>/r<N>/transcript.jsonl`.\n")
+	b.WriteString(" First failure | Transcript |\n|---|---|---|---|---|---|")
+	if paid {
+		b.WriteString("---|")
+	}
+	b.WriteString("---|---|\n")
+	for _, run := range r.Runs {
+		fmt.Fprintf(&b, "| %s | %s | %s | %d | %s | %d |", run.Case, run.Arm, run.Model, run.RunIdx, run.Status, run.Metrics.ToolCalls)
+		if paid {
+			fmt.Fprintf(&b, " $%.3f |", run.Metrics.CostUSD)
+		}
+		fmt.Fprintf(&b, " %s | %s |\n", mdEscape(firstFailure(run)), orDash(run.Transcript))
+	}
 	return b.String()
 }
 

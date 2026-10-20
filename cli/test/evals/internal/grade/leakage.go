@@ -11,7 +11,7 @@ import (
 	"github.com/tracewayapp/traceway/cli/test/evals/internal/checklist"
 )
 
-// Leakage lint (plan §4.8): the seeded data and the prompt must not name the
+// Leakage lint: the seeded data and the prompt must not name the
 // answer. Seeded strings (span names, attribute values, log bodies, stack
 // traces, object names) are checked against a denylist of checklist terms
 // and against the expected checklist row's title; prompts get the checklist

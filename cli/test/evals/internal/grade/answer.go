@@ -114,8 +114,11 @@ func sameEndpoint(got, want string) bool {
 	if g == w {
 		return true
 	}
+	// The answer may leave the method out, or put a word before the
+	// endpoint ("endpoint POST /api/checkout"); it may not name another
+	// method.
 	_, wr, _ := strings.Cut(w, " ")
-	return g == wr || strings.HasSuffix(g, " "+wr)
+	return g == wr || strings.HasSuffix(g, " "+w)
 }
 
 func containsFold(s, sub string) bool {

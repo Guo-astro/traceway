@@ -125,9 +125,11 @@ type metricSeries struct {
 	window           time.Duration
 	scope            string
 	// cumTotal and cumPrev carry a counter's running total across the
-	// chunks metricRequests renders it in.
+	// chunks metricRequests renders it in; histPrev carries the end of a
+	// histogram's last delta window the same way.
 	cumTotal float64
 	cumPrev  time.Time
+	histPrev time.Time
 }
 
 // MetricStep controls sampling: points every Recent inside the last day,
@@ -341,19 +343,30 @@ func (m *metricSeries) render(times []time.Time, origin time.Time) *metricspb.Me
 		m.cumTotal, m.cumPrev = total, prev
 		out.Data = &metricspb.Metric_Sum{Sum: sum}
 	case histogramKind:
+		// Each delta point covers the time since the previous one, which is
+		// longer where points are sparser (MetricStep.Old), and its count
+		// covers the same window.
 		h := &metricspb.Histogram{AggregationTemporality: metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_DELTA}
-		prev := times[0].Add(-time.Minute)
+		prev := m.histPrev
+		if prev.IsZero() {
+			step := time.Minute
+			if len(times) > 1 {
+				step = times[1].Sub(times[0])
+			}
+			prev = times[0].Add(-step)
+		}
 		for _, t := range times {
 			per := m.count(t) * t.Sub(prev).Minutes()
-			prev = t
 			cnt := uint64(math.Max(0, math.Round(per)))
 			mean := m.value(t)
 			s := mean * float64(cnt)
 			h.DataPoints = append(h.DataPoints, &metricspb.HistogramDataPoint{
-				Attributes: attrs, StartTimeUnixNano: nanos(t.Add(-time.Minute)), TimeUnixNano: nanos(t),
+				Attributes: attrs, StartTimeUnixNano: nanos(prev), TimeUnixNano: nanos(t),
 				Count: cnt, Sum: &s,
 			})
+			prev = t
 		}
+		m.histPrev = prev
 		out.Data = &metricspb.Metric_Histogram{Histogram: h}
 	}
 	return out

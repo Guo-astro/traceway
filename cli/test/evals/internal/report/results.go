@@ -34,7 +34,6 @@ type Header struct {
 	Command        string            `json:"command"`
 	Started        time.Time         `json:"started"`
 	Finished       time.Time         `json:"finished"`
-	MaxCostUSD     float64           `json:"maxCostUsd"`
 	Oracle         bool              `json:"oracle,omitempty"`
 	CI             map[string]string `json:"ci,omitempty"`
 }
@@ -147,23 +146,4 @@ func Load(dir string) (*Results, error) {
 		return nil, fmt.Errorf("%s: no results.json and no run results", dir)
 	}
 	return r, nil
-}
-
-// Merge combines shard results under one header.
-func Merge(parts []*Results) *Results {
-	out := &Results{}
-	total := 0.0
-	for i, p := range parts {
-		if i == 0 {
-			out.Header = p.Header
-		}
-		total += p.Header.MaxCostUSD
-		if p.Header.Finished.After(out.Header.Finished) {
-			out.Header.Finished = p.Header.Finished
-		}
-		out.Runs = append(out.Runs, p.Runs...)
-	}
-	out.Header.MaxCostUSD = total
-	sort.SliceStable(out.Runs, func(i, j int) bool { return out.Runs[i].Key() < out.Runs[j].Key() })
-	return out
 }

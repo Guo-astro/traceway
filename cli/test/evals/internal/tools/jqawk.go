@@ -24,9 +24,19 @@ func runJQ(hc interp.HandlerContext, r *shellRun, args []string) int {
 	var files []string
 	var varNames []string
 	var varValues []any
+	// Options may come before or after the filter, as in jq; "--" ends them.
+	optionsDone := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
+		case optionsDone || a == "-" || !strings.HasPrefix(a, "-"):
+			if !haveFilter {
+				filter, haveFilter = a, true
+			} else {
+				files = append(files, a)
+			}
+		case a == "--":
+			optionsDone = true
 		case a == "--arg" && i+2 < len(args):
 			varNames = append(varNames, "$"+args[i+1])
 			varValues = append(varValues, args[i+2])
@@ -68,7 +78,7 @@ func runJQ(hc interp.HandlerContext, r *shellRun, args []string) int {
 				u.errf("jq: unsupported option %s", a)
 				return 2
 			}
-		case strings.HasPrefix(a, "-") && len(a) > 1 && !haveFilter:
+		default:
 			for _, c := range a[1:] {
 				switch c {
 				case 'r':
@@ -92,12 +102,6 @@ func runJQ(hc interp.HandlerContext, r *shellRun, args []string) int {
 					u.errf("jq: unsupported option -%c", c)
 					return 2
 				}
-			}
-		default:
-			if !haveFilter {
-				filter, haveFilter = a, true
-			} else {
-				files = append(files, a)
 			}
 		}
 	}

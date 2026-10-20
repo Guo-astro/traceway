@@ -56,7 +56,7 @@ func (s *Shell) Spec() Spec {
 	allowed := append(names, "jq", "awk")
 	allowed = append(allowed, coreutilNames()...)
 	if s.Git {
-		allowed = append(allowed, "git (log, show, diff, status, blame, ls-files, rev-parse)")
+		allowed = append(allowed, "git ("+strings.Join(gitAllowed, ", ")+")")
 	}
 	return Spec{
 		Name: "shell",
@@ -246,25 +246,45 @@ func (r *shellRun) execTraceway(ctx context.Context, hc interp.HandlerContext, b
 
 var gitAllowed = []string{"log", "show", "diff", "status", "blame", "ls-files", "rev-parse", "shortlog"}
 
+// gitDenied are options of the allowed subcommands that write a file or run
+// a program.
+var gitDenied = []string{"--output", "--ext-diff"}
+
+// execGit runs a read-only git subcommand on the workspace repository. GIT_DIR
+// is pinned, so git never discovers a repository (and its config) written
+// elsewhere in the workspace; the workspace's .git is read-only to every tool.
 func (r *shellRun) execGit(ctx context.Context, hc interp.HandlerContext, args []string) error {
-	sub := ""
-	for _, a := range args[1:] {
-		if !strings.HasPrefix(a, "-") {
-			sub = a
-			break
-		}
-		if a == "-C" || strings.HasPrefix(a, "--git-dir") || strings.HasPrefix(a, "--work-tree") || strings.HasPrefix(a, "-c") {
-			fmt.Fprintln(hc.Stderr, "git: global options are not allowed in this sandbox")
-			return interp.NewExitStatus(2)
-		}
-	}
-	if !slices.Contains(gitAllowed, sub) {
-		fmt.Fprintf(hc.Stderr, "git %s: only read-only git (%s) is available\n", sub, strings.Join(gitAllowed, ", "))
+	refuse := func(format string, a ...any) error {
+		fmt.Fprintf(hc.Stderr, "git: "+format+"\n", a...)
 		return interp.NewExitStatus(2)
 	}
-	cmd := exec.CommandContext(ctx, "git", append([]string{"--no-pager"}, args[1:]...)...)
+	if _, err := r.s.Sandbox.Resolve("", hc.Dir); err != nil {
+		return refuse("only the workspace repository is available")
+	}
+	rest := args[1:]
+	for len(rest) > 0 && (rest[0] == "--no-pager" || rest[0] == "-P") {
+		rest = rest[1:]
+	}
+	if len(rest) > 0 && strings.HasPrefix(rest[0], "-") {
+		return refuse("global options are not allowed in this sandbox")
+	}
+	sub := ""
+	if len(rest) > 0 {
+		sub = rest[0]
+	}
+	if !slices.Contains(gitAllowed, sub) {
+		return refuse("%s: only read-only git (%s) is available", sub, strings.Join(gitAllowed, ", "))
+	}
+	for _, a := range rest[1:] {
+		if err := r.gitArg(hc.Dir, a); err != nil {
+			return refuse("%v", err)
+		}
+	}
+	root := r.s.Sandbox.Root
+	cmd := exec.CommandContext(ctx, "git", append([]string{"--no-pager"}, rest...)...)
 	cmd.Dir = hc.Dir
-	cmd.Env = []string{"HOME=" + r.s.Sandbox.Root, "PATH=/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_PAGER=cat", "PAGER=cat", "TZ=UTC", "LANG=C.UTF-8", "GIT_OPTIONAL_LOCKS=0"}
+	cmd.Env = []string{"HOME=" + root, "PATH=/usr/bin:/bin", "GIT_DIR=" + filepath.Join(root, ".git"), "GIT_WORK_TREE=" + root,
+		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_PAGER=cat", "PAGER=cat", "TZ=UTC", "LANG=C.UTF-8", "GIT_OPTIONAL_LOCKS=0"}
 	so := &limitedBuffer{n: 100000}
 	cmd.Stdout = io.MultiWriter(hc.Stdout, so)
 	cmd.Stderr = hc.Stderr
@@ -282,13 +302,55 @@ func (r *shellRun) execGit(ctx context.Context, hc interp.HandlerContext, args [
 	return exitStatus(exit)
 }
 
+// gitArg refuses a denied option, and any argument or option value that
+// names an existing file outside the workspace: git diff reads two such paths
+// even without --no-index, and blame --contents, -O and the like read one.
+// Values that name nothing on disk (a pickaxe string such as -S/api/orders)
+// pass.
+func (r *shellRun) gitArg(dir, a string) error {
+	var values []string
+	switch {
+	case a == "--":
+	case strings.HasPrefix(a, "--"):
+		name, value, _ := strings.Cut(a, "=")
+		if slices.Contains(gitDenied, name) {
+			return fmt.Errorf("%s is not available in this sandbox", name)
+		}
+		values = []string{value}
+	case strings.HasPrefix(a, "-"):
+		// A short option's value is attached after its letter (-O../x), and
+		// letters can be bundled before it (-pO../x).
+		for i := 2; i < len(a); i++ {
+			values = append(values, a[i:])
+		}
+	default:
+		values = []string{a}
+	}
+	for _, v := range values {
+		if v == "" {
+			continue
+		}
+		if _, err := r.s.Sandbox.Resolve(dir, v); err == nil {
+			continue
+		}
+		p := v
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(dir, p)
+		}
+		if _, err := os.Lstat(p); err == nil {
+			return fmt.Errorf("%s: %w", v, ErrOutside)
+		}
+	}
+	return nil
+}
+
 func (r *shellRun) open(ctx context.Context, path string, flag int, perm os.FileMode) (io.ReadWriteCloser, error) {
 	hc := interp.HandlerCtx(ctx)
 	abs, err := r.s.Sandbox.Resolve(hc.Dir, path)
 	if err != nil {
 		return nil, err
 	}
-	if flag&(os.O_WRONLY|os.O_RDWR|os.O_CREATE|os.O_APPEND|os.O_TRUNC) != 0 {
+	if flag&(os.O_WRONLY|os.O_RDWR|os.O_CREATE|os.O_APPEND|os.O_TRUNC) != 0 && abs != "/dev/null" {
 		if err := r.s.Sandbox.Writable(abs); err != nil {
 			return nil, err
 		}

@@ -32,12 +32,13 @@ commands:
 
 - `twevals list [--preset P] [--cases GLOB] [--arms A]` prints the case × arm
   combinations a selection picks.
-- `twevals oracle [--all | <case-id>...] [--arms A] [-j N] [--keep]` plays
-  the oracles and writes `results.json` and `summary.md`. It exits `1` when
-  an oracle fails.
+- `twevals oracle [--all | <case-id>... | --suites S] [--arms A] [-j N]
+  [--keep] [--out DIR]` plays the oracles and writes `results.json` and
+  `summary.md` to `--out` (default `.cache/oracle/<timestamp>/`). It exits `1`
+  when an oracle fails.
 
-Presets (`presets.yaml`): `smoke` is the starred cases on the primary arm,
-`core` every case on the primary arm, `full` every arm a case lists.
+Presets (`presets.yaml`): `smoke` is the cases tagged `smoke` on the primary
+arm, `core` every case on the primary arm, `full` every arm a case lists.
 
 Requirements: Go (the `go`/`toolchain` lines of `go.mod`) and git. The
 harness builds the backend and both CLI editions from this checkout into
@@ -48,7 +49,8 @@ harness builds the backend and both CLI editions from this checkout into
 A run is `pass`, `fail`, `budget_exhausted` (counted as a fail) or
 `infra_error` (excluded from pass rates).
 
-Each run directory, `runs/<case>/<arm>/<model>/r<N>/`, holds:
+Each run directory, `runs/<case>/<arm>/<model>/r<N>/` (with `+` in the arm
+written as `_`, so `cli_skill`), holds:
 
 - `transcript.jsonl`: every model response, every tool call with its id, op,
   argv, exit code and output;
@@ -146,9 +148,12 @@ func seedNPlusOne(s *seed.Scenario) error {
 
 Backend facts that bite (each one cost a case author an afternoon):
 
-- Health-check routes (`/health`, `/healthz`, `/ping`, `/ready`, ...) are
-  dropped at ingest, so an endpoint seeded on them never appears and `Verify`
-  fails with "endpoints never became visible".
+- Successful `GET`/`HEAD` requests to health-check routes (`/health`,
+  `/healthz`, `/ping`, `/ready`, `/status`, `/up`, ...; the list is in
+  `backend/app/services/healthcheck.service.go`) are dropped at ingest, which
+  is the projects' default. An endpoint seeded on one never appears and
+  `Verify` fails with "endpoints never became visible"; a failing one (status
+  400 or more) is kept.
 - `endpoints list --order-by p95|lastSeen` does not sort: the CLI sends
   `p95`/`lastSeen`, the SQLite/DuckDB repositories only know
   `p95_duration`/`last_seen`, and the list falls back to impact order. Keep
@@ -176,7 +181,8 @@ Backend facts that bite (each one cost a case author an afternoon):
 See `perf-db-n-plus-1.yaml` for the full shape. The keys:
 
 - `arms` and `invoke`: `slash` preloads SKILL.md the way a `/traceway`
-  command does, and `natural` makes the agent load the skill itself.
+  command does, and `natural` makes the agent load the skill itself. A slash
+  case's prompt starts with `/traceway`, and only a slash case's does.
 - `workspace.repo`: a fixture under `testdata/repos`. Fixtures can carry
   history: a `history.yaml` whose commits are overlays under `.history/`
   (only the files that differ from the fixture, plus an `absent:` list of
@@ -229,6 +235,8 @@ reached` or Postgres's `deadlock detected`, and neutral names.
 ```
 models.yaml presets.yaml
 cmd/twevals/           list | oracle
+internal/catalog/      the case schema, presets, models.yaml
+internal/checklist/    the bottleneck rows of performance.md, the perf answer enum
 internal/env/          backend subprocess, registration, PATs, CLI logins, the stub
 internal/seed/         the DSL, OTLP and /api/report writers, read-back verification
 internal/scenarios/    one seed function per case
@@ -236,15 +244,19 @@ internal/agent/        the Chat Completions client (loopback only), the loop, pr
 internal/tools/        the sandboxed shell (mvdan.cc/sh, in-process coreutils, gojq, goawk), files, skills, ask_user, submit
 internal/ops/          CLI → operation mapping, cross-checked against tool-map.md
 internal/grade/        answer, trajectory, grounding, report, leakage
+internal/record/       the run record: calls, operations, usage
 internal/runner/       one run end to end
 internal/report/       results.json and summary.md
+internal/suite/        catalog-wide tests
 cases/ testdata/       cases, fixture repos, oracle files
 ```
 
 The agent's shell is an interpreter, never the host shell. It has the
 `traceway` binary (logged in with a read PAT whose config lives outside the
 workspace), `jq`, `awk`, read-only text utilities confined to the workspace,
-and read-only `git`. Tool subprocesses get a scrubbed environment (`HOME`,
+and read-only `git`. No tool writes under a `.git` directory, git always
+uses the workspace's repository, and git refuses arguments that name a file
+outside the workspace or options that write files or run programs. Tool subprocesses get a scrubbed environment (`HOME`,
 `XDG_*`, `PATH`, `TZ`, `LANG`), so secrets in the harness's environment
 never reach them.
 
@@ -252,8 +264,9 @@ never reach them.
 
 The first performance scenarios were contributed by Liyu in PR #405
 ("feat(skills): add performance skill evals"). They were ported to this
-harness as `perf-db-n-plus-1`, `perf-db-missing-index`, `perf-net-sequential`,
+module as `perf-db-n-plus-1`, `perf-db-missing-index`, `perf-net-sequential`,
 `perf-db-pool-exhaustion`, `perf-app-sync-background`, `perf-net-large-payload`,
 `perf-cache-no-cache`, `perf-infra-cpu-saturation`, `perf-cache-stampede`,
 `perf-xs-ios-watchdog`, `perf-xs-android-timeouts`, `debug-android-npe` and
-`debug-flutter-null-check`.
+`debug-flutter-null-check`. The two debug cases sit in `cases/debug/` and are
+not loaded yet: the harness runs the perf suite only.

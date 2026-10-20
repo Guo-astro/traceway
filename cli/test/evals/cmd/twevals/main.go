@@ -14,10 +14,12 @@ import (
 const usage = `twevals: Traceway skill and MCP evals (oracle runs only, free)
 
   twevals list    [--preset P] [--suites S] [--tags T] [--cases GLOB] [--arms A]
-  twevals oracle  [--all | <case-id>...] [--arms A] [-j N] [--keep]
+  twevals oracle  [--all | <case-id>... | --suites S] [--arms A] [-j N] [--keep] [--out DIR]
 
 Selection flags: --preset smoke|core|full, --cases (comma-separated ids or globs; overrides the preset), --suites, --tags, --arms.
-Exit codes: 0 ok, 1 failed oracle.
+list defaults to --preset full. oracle writes results.json and summary.md to --out
+(default .cache/oracle/<timestamp>).
+Exit codes: 0 ok, 1 a failed oracle or an error, 2 bad usage.
 `
 
 func main() {
@@ -38,7 +40,7 @@ func main() {
 		fmt.Print(usage)
 		return
 	default:
-		err = fmt.Errorf("unknown command %q", os.Args[1])
+		err = &exitError{2, fmt.Sprintf("unknown command %q (twevals help lists them)", os.Args[1])}
 	}
 	if err != nil {
 		var ex *exitError

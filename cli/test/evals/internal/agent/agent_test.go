@@ -62,18 +62,23 @@ func (echoTool) Call(context.Context, json.RawMessage) tools.Result {
 	return tools.Result{Output: "echoed", OK: true}
 }
 
+// submission is a valid submit_perf_diagnosis payload whose report is r.
+func submission(r string) string {
+	return `{"checklist_item":"none_found","locus":{},"evidence":[{"call_id":"c01","claim":"x"}],"fix":"none","confidence":"low","report":"` + r + `"}`
+}
+
 func cfg(s *scripted) Config {
 	return Config{
-		Model: &catalog.Model{Key: "m", ID: "x/y", Caching: "anthropic"}, Chat: s, System: "sys", Prompt: "do it", SubmitTool: tools.Finish,
-		Tools:  []tools.Tool{echoTool{}, &tools.Submit{Kind: tools.Finish, MaxRepairs: 2}},
+		Model: &catalog.Model{Key: "m", ID: "x/y", Caching: "anthropic"}, Chat: s, System: "sys", Prompt: "do it", SubmitTool: tools.SubmitPerf,
+		Tools:  []tools.Tool{echoTool{}, &tools.Submit{Kind: tools.SubmitPerf, MaxRepairs: 2}},
 		Budget: catalog.Budget{MaxTurns: 5, MaxToolCalls: 3},
 	}
 }
 
 func TestLoopSubmits(t *testing.T) {
-	s := &scripted{resps: []*Response{toolResp("echo", `{}`, 0.01), toolResp("finish", `{"summary":"done","changes":[]}`, 0.01)}}
+	s := &scripted{resps: []*Response{toolResp("echo", `{}`, 0.01), toolResp(tools.SubmitPerf, submission("done"), 0.01)}}
 	run := Run(context.Background(), cfg(s))
-	if run.StopReason != StopSubmitted || run.Submission["summary"] != "done" || len(run.Calls) != 2 || run.Calls[0].ID != "c01" {
+	if run.StopReason != StopSubmitted || run.Submission["report"] != "done" || len(run.Calls) != 2 || run.Calls[0].ID != "c01" {
 		t.Fatalf("run = %+v", run)
 	}
 	if run.Usage.CostUSD != 0.02 {
@@ -104,7 +109,7 @@ func TestLoopNudgesOnceThenStops(t *testing.T) {
 		t.Fatalf("stop %s after %d requests", run.StopReason, len(s.reqs))
 	}
 	last := s.reqs[1].Messages
-	if !strings.Contains(textOf(last[len(last)-1]), "call finish") {
+	if !strings.Contains(textOf(last[len(last)-1]), "call "+tools.SubmitPerf) {
 		t.Fatal("the nudge must name the submit tool")
 	}
 }
@@ -140,7 +145,7 @@ func TestLoopBudgets(t *testing.T) {
 }
 
 func TestUnknownToolIsAnError(t *testing.T) {
-	s := &scripted{resps: []*Response{toolResp("nope", `{}`, 0), toolResp("finish", `{"summary":"x","changes":[]}`, 0)}}
+	s := &scripted{resps: []*Response{toolResp("nope", `{}`, 0), toolResp(tools.SubmitPerf, submission("x"), 0)}}
 	run := Run(context.Background(), cfg(s))
 	if run.Calls[0].OK || !strings.Contains(run.Calls[0].Output, "no tool named") {
 		t.Fatalf("%+v", run.Calls[0])
@@ -193,8 +198,31 @@ func TestPromptHelpers(t *testing.T) {
 	if SlashSkill("/traceway debug x") != "traceway" || SlashSkill("why is it slow") != "" {
 		t.Fatal("SlashSkill")
 	}
-	p := SystemPrompt(PromptInput{SubmitTool: "finish", Skills: []tools.Skill{{Name: "traceway", Description: "d"}}})
-	if !strings.Contains(p, "- traceway: d") || !strings.Contains(p, "call finish") {
+	p := SystemPrompt(PromptInput{SubmitTool: tools.SubmitPerf, Skills: []tools.Skill{{Name: "traceway", Description: "d"}}})
+	if !strings.Contains(p, "- traceway: d") || !strings.Contains(p, "call "+tools.SubmitPerf) {
 		t.Fatal(p)
+	}
+}
+
+// TestFakeRuntimeTemplates: numbers looked up from a tool result keep the
+// text they had there, at any size.
+func TestFakeRuntimeTemplates(t *testing.T) {
+	msgs := []Message{{Role: "tool", Content: "[call c01]\n{\"d\":45200000,\"t\":1760000000123456789,\"f\":0.25,\"o\":{\"a\":[1,2]}}\n[budget: 3 tool calls and 4 turns left]"}}
+	got, err := resolveRuntime("--min {{last.d}} --at {{calls.c01.t}} --r {{last.f}} {{last.o}}", msgs)
+	if err != nil || got != `--min 45200000 --at 1760000000123456789 --r 0.25 {"a":[1,2]}` {
+		t.Fatalf("got %q, %v", got, err)
+	}
+	args, err := resolveArgs(map[string]any{"n": "{{last.d}}"}, msgs)
+	if raw, _ := json.Marshal(args); err != nil || string(raw) != `{"n":45200000}` {
+		t.Fatalf("whole-string template: %s, %v", raw, err)
+	}
+}
+
+func TestFakeSubmitTool(t *testing.T) {
+	if got := submitTool(map[string]bool{"shell": true, tools.SubmitPerf: true, "read_file": true}); got != tools.SubmitPerf {
+		t.Fatalf("submitTool = %q", got)
+	}
+	if got := submitTool(map[string]bool{"shell": true}); got != "" {
+		t.Fatalf("submitTool without one = %q", got)
 	}
 }

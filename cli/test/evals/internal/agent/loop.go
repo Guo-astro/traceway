@@ -150,7 +150,7 @@ func Run(ctx context.Context, cfg Config) *record.Run {
 			case final:
 				res = tools.Result{Output: "not executed: the task was already submitted"}
 				c.Rejected = true
-			case callN > budget.MaxToolCalls && !isSubmit(tc.Function.Name):
+			case callN > budget.MaxToolCalls && !tools.IsSubmit(tc.Function.Name):
 				res = tools.Result{Output: fmt.Sprintf("not executed: the tool-call budget (%d) is used up. Call %s now.", budget.MaxToolCalls, cfg.SubmitTool)}
 				c.Rejected = true
 			default:
@@ -188,10 +188,6 @@ func Run(ctx context.Context, cfg Config) *record.Run {
 			return finish(StopBudget, "wall-clock timeout")
 		}
 	}
-}
-
-func isSubmit(name string) bool {
-	return name == tools.SubmitPerf || name == tools.SubmitDebug || name == tools.Finish
 }
 
 func nonEmpty(s string) string {

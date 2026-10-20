@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/tracewayapp/traceway/cli/test/evals/internal/record"
+	"github.com/tracewayapp/traceway/cli/test/evals/internal/tools"
 )
 
 // Grounding checks that the evidence is real:
@@ -43,7 +44,7 @@ func Grounding(in *Input) *Verdict {
 				cited = append(cited, c)
 			}
 		}
-	} else if in.Case.Suite == "perf" || in.Case.Suite == "debug" {
+	} else if in.Case.Suite == "perf" {
 		v.fail("the submission cites no evidence")
 	}
 	for _, key := range in.Case.Expect.Grounding {
@@ -107,13 +108,17 @@ func unescapeJSON(s string) string {
 var idRe = regexp.MustCompile(`(?i)\b(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32}|[0-9a-f]{16})\b`)
 
 // InventedIDs lists ids in the submission (and final text) that appear in no
-// tool output and not in the prompt.
+// tool output and not in the prompt. The submit calls are left out of the
+// corpus: their arguments are the submission itself.
 func InventedIDs(run *record.Run) []string {
 	raw, _ := json.Marshal(run.Submission)
 	text := string(raw) + "\n" + run.FinalText
 	var corpus strings.Builder
 	corpus.WriteString(strings.ToLower(run.Prompt))
 	for _, c := range run.Calls {
+		if tools.IsSubmit(c.Tool) {
+			continue
+		}
 		corpus.WriteString(strings.ToLower(c.Output))
 		corpus.WriteString(strings.ToLower(string(c.Args)))
 		for _, op := range c.Ops {

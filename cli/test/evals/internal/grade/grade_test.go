@@ -2,6 +2,7 @@ package grade
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -62,12 +63,37 @@ func TestTrajectory(t *testing.T) {
 			s.MaxIdenticalRepeats = 1
 			r.Calls = append(r.Calls, call("c09", true, "{}", "traceway endpoints list --since 24h --output json"))
 		}, "same call ran 2 times"},
+		"thrash, read in chunks of the same window": {func(r *record.Run, s *catalog.Trajectory) {
+			s.MaxIdenticalRepeats = 1
+			read := func(id string) *record.Call {
+				return &record.Call{ID: id, Tool: "read_file", OK: true, Ops: []record.OpRecord{{Op: ops.Op{Op: ops.OpReadFile, Args: map[string]any{"path": "big.go", "offset": 2001}}, OK: true}}}
+			}
+			r.Calls = append(r.Calls, read("c11"), read("c12"))
+		}, "same call ran 2 times"},
 		"too many failures": {func(r *record.Run, s *catalog.Trajectory) {
 			s.MaxFailedCalls = 0
 			s.MaxFailedCalls = 1
 			r.Calls = append(r.Calls, call("c10", false, "x", "traceway logs query"))
 		}, "failed tool calls"},
 	}
+	// Reading a file in chunks and changing one file several times are not
+	// thrashing.
+	chunked := &record.Run{Calls: append([]*record.Call{}, run.Calls...)}
+	for i, off := range []int{0, 2001, 4001} {
+		args := map[string]any{"path": "big.go"}
+		if off > 0 {
+			args["offset"] = off
+		}
+		chunked.Calls = append(chunked.Calls,
+			&record.Call{ID: fmt.Sprintf("r%d", i), Tool: "read_file", OK: true, Ops: []record.OpRecord{{Op: ops.Op{Op: ops.OpReadFile, Args: args}, OK: true}}},
+			&record.Call{ID: fmt.Sprintf("e%d", i), Tool: "edit_file", OK: true, Ops: []record.OpRecord{{Op: ops.Op{Op: ops.OpEditFile, Args: map[string]any{"path": "big.go"}}, OK: true}}})
+	}
+	repeats := *spec
+	repeats.MaxIdenticalRepeats = 1
+	if v := Trajectory(chunked, &repeats); !v.Pass {
+		t.Fatalf("chunked reads and repeated edits counted as thrashing:\n%s", failures(v))
+	}
+
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
 			r := &record.Run{Calls: append([]*record.Call{}, run.Calls...)}
@@ -100,11 +126,31 @@ func TestAnswer(t *testing.T) {
 		"wrong row":     {"checklist_item": "missing_or_unused_index", "locus": good["locus"]},
 		"distractor":    {"checklist_item": "over_fetching", "locus": good["locus"]},
 		"wrong locus":   {"checklist_item": "select_n_plus_1", "locus": map[string]any{"endpoint": "GET /api/orders/:id", "span": "order_items"}},
+		"wrong method":  {"checklist_item": "select_n_plus_1", "locus": map[string]any{"endpoint": "POST /api/orders", "span": "order_items"}},
 		"no span":       {"checklist_item": "select_n_plus_1", "locus": map[string]any{"endpoint": "GET /api/orders"}},
 		"no submission": nil,
 	} {
 		if v := Answer(perfInput(sub)); v.Pass {
 			t.Errorf("%s: should fail", name)
+		}
+	}
+}
+
+func TestSameEndpoint(t *testing.T) {
+	for _, c := range []struct {
+		got, want string
+		same      bool
+	}{
+		{"POST /api/checkout", "POST /api/checkout", true},
+		{"post /api/checkout/", "POST /api/checkout", true},
+		{"/api/checkout", "POST /api/checkout", true},
+		{"endpoint POST /api/checkout", "POST /api/checkout", true},
+		{"GET /api/checkout", "/api/checkout", true},
+		{"GET /api/checkout", "POST /api/checkout", false},
+		{"POST /api/checkout/items", "POST /api/checkout", false},
+	} {
+		if got := sameEndpoint(c.got, c.want); got != c.same {
+			t.Errorf("sameEndpoint(%q, %q) = %v", c.got, c.want, got)
 		}
 	}
 }
@@ -126,7 +172,11 @@ func TestGrounding(t *testing.T) {
 		"failed call":    {perfInput(sub("c01", ""), call("c01", false, out, "traceway endpoints show x")), "which failed"},
 		"truncated call": {perfInput(sub("c01", ""), &record.Call{ID: "c01", OK: true, Truncated: true, Output: out}), "truncated"},
 		"invented id":    {perfInput(sub("c01", "and trace 4bf92f3577b34da6a3ce929d0e0e4736"), c1), "no tool returned"},
-		"missing key":    {perfInput(sub("c02", ""), c1, call("c02", true, `{"data":[]}`, "traceway endpoints list")), "contains"},
+		// The submit call itself is recorded with the submission as its
+		// arguments; that must not vouch for the ids in it.
+		"invented id, submit recorded": {perfInput(sub("c01", "and trace 4bf92f3577b34da6a3ce929d0e0e4736"), c1,
+			&record.Call{ID: "c02", Tool: "submit_perf_diagnosis", OK: true, Args: json.RawMessage(`{"report":"trace 4bf92f3577b34da6a3ce929d0e0e4736"}`)}), "no tool returned"},
+		"missing key": {perfInput(sub("c02", ""), c1, call("c02", true, `{"data":[]}`, "traceway endpoints list")), "contains"},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {

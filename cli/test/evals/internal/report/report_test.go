@@ -2,6 +2,7 @@ package report
 
 import (
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/tracewayapp/traceway/cli/test/evals/internal/runner"
@@ -32,5 +33,25 @@ func TestAggregate(t *testing.T) {
 	}
 	if c := a.Cost["opus"]; c.PassingRuns != 3 || math.Abs(c.AvgCostUSD-0.6) > 1e-9 {
 		t.Fatalf("cost %+v", c)
+	}
+}
+
+// TestOracleSummary: an oracle run costs nothing, so its summary names no
+// spend, and each run's transcript is listed at the path it was written to.
+func TestOracleSummary(t *testing.T) {
+	r := res("perf-a", "cli+skill", "oracle", 1, "pass", 0)
+	r.Transcript = "runs/perf-a/cli_skill/oracle/r1/transcript.jsonl"
+	out := Markdown(&Results{Header: Header{Oracle: true}, Runs: []*runner.Result{r}, Aggregates: Aggregate([]*runner.Result{r})})
+	for _, s := range []string{"Spend", "Cost", "cap"} {
+		if strings.Contains(out, s) {
+			t.Errorf("oracle summary mentions %q:\n%s", s, out)
+		}
+	}
+	if !strings.Contains(out, r.Transcript) {
+		t.Errorf("summary lacks the transcript path:\n%s", out)
+	}
+	paid := Markdown(&Results{Runs: []*runner.Result{r}, Aggregates: Aggregate([]*runner.Result{r})})
+	if !strings.Contains(paid, "Spend") || !strings.Contains(paid, "| Cost |") {
+		t.Errorf("a paid run's summary lost its cost:\n%s", paid)
 	}
 }
