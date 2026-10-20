@@ -18,6 +18,8 @@ type Judge struct {
 	Chat   agent.Chatter
 	Model  *catalog.Model
 	Ledger *agent.Ledger
+	// Price estimates the judge's cost when the provider reports none.
+	Price catalog.Price
 }
 
 const judgeSystem = `You grade an AI agent's work against a rubric. You see the user's request, the expected outcome (hidden from the agent), the agent's final report and structured answer, and a condensed log of the tool calls it made.
@@ -95,8 +97,12 @@ func (j *Judge) Grade(ctx context.Context, in *Input) *Verdict {
 		v.note("judge call failed: %v", err)
 		return v
 	}
-	v.CostUSD = resp.Usage.Cost
-	j.Ledger.Add("judge", resp.Usage.Cost)
+	v.CostUSD = agent.UsageOf(resp, j.Price).CostUSD
+	if in.Hold != nil {
+		in.Hold.Add("judge", v.CostUSD)
+	} else {
+		j.Ledger.Add("judge", v.CostUSD)
+	}
 	text, _ := resp.Choices[0].Message.Content.(string)
 	var out struct {
 		Criteria []struct {

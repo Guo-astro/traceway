@@ -28,26 +28,42 @@ harness, with the same tools, prompts and budgets (`models.yaml`).
    Run workflow (or `gh workflow run cli-evals.yml`). The free preflight job
    writes the matrix and a live-price estimate into the job summary. The
    paid job waits for a required reviewer on the `evals` environment, which
-   is the only place `OPENROUTER_API_KEY` exists.
+   is the only place `OPENROUTER_API_KEY` exists. Store the key there only,
+   never as a repository or organization secret: GitHub creates a missing
+   environment on first use with no reviewer, so the preflight refuses a paid
+   run unless `evals` exists with a required reviewer.
 2. **Nothing runs automatically.** `cli-evals.yml` has exactly one trigger,
    `workflow_dispatch`. There is no push, pull request, label, schedule,
    `workflow_run`, `workflow_call` or `repository_dispatch` trigger. No other
    workflow calls it, and no `just` recipe in `check`/`test`/`default` runs it.
 3. **Enforced in code:**
    - `internal/guard/triggers_test.go` fails if the workflow gains a trigger, a
-     paid job loses `environment: evals`, or another workflow references it or
-     starts `twevals run`.
+     paid job loses `environment: evals`, the approval flag moves out of that
+     job, another workflow or composite action references it (by file, by
+     name, through `just eval-dispatch` or the key's name), uses the `evals`
+     environment or starts `twevals run`, or a recipe reachable from `just
+     check`/`test`/`default` runs or dispatches the evals. Because this module
+     is its own Go module, the CLI workflow never runs it; `eval-guard.yml`
+     does, on every change to a workflow, an action, the justfile or this
+     module (label-gated like the other workflows).
    - `twevals run` and `twevals resume` start in CI only inside a dispatched
      `cli-evals.yml` job that set `TWEVALS_APPROVED=1` (the gated job does).
      They refuse any other GitHub event, any other workflow, and any other CI
      system.
-   - `--max-cost-usd` is required, with no default. The workflow splits it
-     into hard per-shard caps.
+   - `--max-cost-usd` is required, with no default, and must be a finite
+     number above 0. The workflow splits it into per-shard caps. Each run
+     reserves its share when it starts, so the runs in flight are never
+     promised more than is left, and a run stops before a model call that
+     would likely cross its share. The cap can still be passed by the error in
+     that estimate (about one turn's growth per run in flight) and the judge's
+     few cents.
    - `go test ./...` can never call OpenRouter: the real client requires
      `guard.Live()`, which is false under `go test`.
-4. **Local paid runs are for harness development only.** On a terminal you
-   must type `yes` after reading the preflight. Without a terminal, `--yes` is
-   required. Recorded results (checkpoints, baselines) come from the workflow.
+4. **Local paid runs are for harness development only.** You must type `yes`
+   on a terminal after reading the preflight. Without a terminal (a script, or
+   an agent's shell) a local paid run is refused, and `--yes` does not stand in
+   for the typed confirmation; it only serves the dispatched workflow. Recorded
+   results (checkpoints, baselines) come from the workflow.
 
 ## Running it
 
@@ -68,7 +84,7 @@ the `evals` gate. `just eval-dispatch -f preset=smoke -f max_cost_usd=30` from
 | `suites`, `arms` | Narrow the selection |
 | `models` | `opus,astra`, `opus` or `astra` |
 | `runs` | Repeats per case, 1-3 |
-| `max_cost_usd` | Hard cap for the whole dispatch. Required |
+| `max_cost_usd` | Cap for the whole dispatch, split per shard (see the policy above). Required |
 | `dry_run` | Preflight, harness tests and every oracle only. Costs $0. Use it to validate workflow edits and Dependabot bumps |
 | `judge` | Score reports with the (non-gating) LLM judge |
 | `compare_baseline` | Compare against `baseline.json`; a regression turns the report job red |
@@ -85,22 +101,28 @@ From `cli/` (each recipe runs only when you type it):
 | `just eval-harness` | `go test ./...` plus every oracle trajectory, with the fake model. Free |
 | `just eval-plan --preset core --max-cost-usd 200` | The preflight table and cost estimate. Free |
 | `just eval-env perf-db-n-plus-1` | Boots and seeds one case, then prints the dashboard URL, a login and a read PAT so you can look at the data by eye |
-| `just eval-local --cases perf-db-n-plus-1 --models opus --max-cost-usd 5` | A paid local run, for harness development only. It asks you to type `yes` |
+| `just eval-local --cases perf-db-n-plus-1 --models opus --max-cost-usd 5` | A paid local run, for harness development only. It asks you to type `yes` on a terminal |
 | `just eval-dispatch ...` | `gh workflow run cli-evals.yml ...` |
 
 Directly from `cli/test/evals`, `go run ./cmd/twevals help` lists every
 command. `twevals oracle <id>...` (or `--all`, or `--suites S`) plays a case's
 oracle on every arm it lists and writes `results.json` and `summary.md` to
 `--out` (default `.cache/oracle/<timestamp>/`).
-`twevals report <dir>...` merges shard results. `twevals compare <dir>`
+`twevals report <dir>... --out DIR` merges shard results (`--out` is
+required for more than one directory, and a run that appears twice is an
+error). `twevals compare <dir>`
 applies the regression rule. `twevals baseline update <dir>` rewrites
 `baseline.json` for you to commit.
 
 Requirements: Go (the `go`/`toolchain` lines of `go.mod`), git, and Docker for
 the setup suite. Docker also runs the hidden tests of a model's patch with no
-network. Without Docker, setup runs of a real model fail, and hidden tests of
-a real model's patch are skipped unless `TWEVALS_HOST_TESTS=1`. Oracle runs
-(our own code) use the host when Docker is missing.
+network and an empty module cache, so a fixture with hidden tests must not
+need module dependencies. Without Docker, setup runs of a real model fail, and hidden tests of
+a real model's patch are skipped unless `TWEVALS_HOST_TESTS=1` (the diff
+checks, such as touching the culprit, still gate). Oracle runs (our own code)
+use the host when Docker is missing. The setup oracles fetch their pinned
+OpenTelemetry modules, so `oracle --all` needs the Go module proxy or a warm
+module cache.
 
 ### Exit codes
 
@@ -121,8 +143,8 @@ averages: 100-400k cumulative input tokens (about 70% cached), 5-15k output.
 
 `twevals plan` prints the real numbers from live OpenRouter prices, including
 the cache-write price and long-prompt tiers. Controls: the required cap, the
-preflight, the gate, per-shard caps, a check before every run, `dry_run`, and
-the record/replay cache (`--cache record|replay`, `EVAL_CACHE`).
+preflight, the gate, per-shard caps, a reservation per run and a check before
+every model call, and `dry_run`.
 
 ## Reading the report
 
@@ -136,8 +158,11 @@ the record/replay cache (`--cache record|replay`, `EVAL_CACHE`).
 - the top failing graders and the worst cases;
 - one line per run, with its first failure.
 
-A run is `pass`, `fail`, `budget_exhausted` (counted as a fail),
-`infra_error` or `cost_ceiling`; the last two are excluded from pass rates.
+A run is `pass`, `fail`, `budget_exhausted` (the case's own turn, call,
+token or time budget ran out; counted as a fail), `infra_error` or
+`cost_ceiling` (not started, or stopped at its share of `--max-cost-usd`);
+the last two are excluded from pass rates, and `twevals resume` runs them
+again.
 
 Each run directory, `runs/<case>/<arm>/<model>/r<N>/` (with `+` in the arm
 written as `_`, so `cli_skill`), holds:
@@ -156,7 +181,7 @@ Graders:
 | `trajectory` | yes | Required, alternative, forbidden and ordered operations, and thrash limits. CLI and MCP calls map to the same operations (`internal/ops`) |
 | `grounding` | yes | Cited calls exist, succeeded and were not truncated. Their output contains the deciding signal. No id in the answer was invented |
 | `state` | yes | After write and setup runs: the backend and the workspace are in the expected state |
-| `hidden_tests` | per case | Hidden tests copied in after the run, and whether the diff touches the culprit |
+| `hidden_tests` | per case | Hidden tests copied in after the run, and whether the diff (against the workspace before the run) touches the culprit |
 | `setup_verify` | yes | The instrumented app builds, starts against the backend, and serves traffic |
 | `judge` | no | The rubric, scored by Haiku. It does not gate until it agrees with human labels on at least 85% of runs |
 
@@ -169,8 +194,10 @@ envelope. To update it, download the `eval-report` artifact, run
 in a normal PR.
 
 The regression rule: a suite's pass rate drops more than 10 percentage points
-for a model × arm, or a case at 2 of 3 or better in the baseline now passes 0
-of N.
+for a model × arm, or a case that passed at least 2 runs, at 2 of 3 or better,
+in the baseline now passes 0 of N. With one run per case the suite rule is the
+only one that can fire, and a suite of few cases moves in large steps (one
+failure of 4 runs is 25 points).
 
 ## Adding a case
 
@@ -316,7 +343,9 @@ See `perf-db-n-plus-1.yaml` for the full shape. The keys:
   in `internal/grade/state.go`), `expect.code`, `expect.report`.
 - `judge.rubric` and `judge.expected`. Both are shown only to the judge.
 - `hooks`: harness actions after a matching call, such as editing a
-  post-mortem behind the agent's back.
+  post-mortem behind the agent's back (`edit_post_mortem`, `stub_healthy`,
+  `stub_unhealthy`, `sleep`, `approve_setup_draft`). A hook that fails makes
+  the run an `infra_error`, since the case did not happen as written.
 - `setup`: the env given to the agent's container shell (`@token:<project>`,
   `@url`, `@port`), and the verify step.
 
@@ -375,7 +404,7 @@ internal/checklist/    the bottleneck rows of performance.md, the perf answer en
 internal/env/          backend subprocess, registration, members, PATs, CLI logins, the monitor stub
 internal/seed/         the DSL, OTLP and /api/report writers, dashboard objects, read-back verification
 internal/scenarios/    one seed function per case
-internal/agent/        OpenRouter client, the loop, prompt caching, transcripts, record/replay, the fake model
+internal/agent/        OpenRouter client, the loop, the cost ledger, prompt caching, transcripts, the fake model
 internal/tools/        the sandboxed shell (mvdan.cc/sh, in-process coreutils, gojq, goawk), files, skills, MCP bridge, ask_user, submit
 internal/ops/          CLI/MCP → operation mapping, cross-checked against tool-map.md
 internal/grade/        answer, trajectory, grounding, state, hidden tests, judge, leakage

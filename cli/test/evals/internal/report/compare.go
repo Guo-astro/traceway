@@ -101,8 +101,10 @@ type Regression struct {
 }
 
 // Compare applies the regression rule: a suite's pass rate drops
-// more than 10 percentage points for a model × arm, or a case at 2 of 3 or
-// better in the baseline now passes 0 of N.
+// more than 10 percentage points for a model × arm, or a case that passed at
+// least 2 runs at a rate of 2 of 3 or better in the baseline now passes 0 of N
+// (a single passing run is not enough history to call a single failure a
+// regression).
 func Compare(r *Results, b *Baseline) []Regression {
 	a := Aggregate(r.Runs)
 	var out []Regression
@@ -121,7 +123,7 @@ func Compare(r *Results, b *Baseline) []Regression {
 		if !ok || before.Total == 0 {
 			continue
 		}
-		if before.Rate >= 2.0/3.0-1e-9 && now.Pass == 0 && now.Total > 0 {
+		if before.Pass >= 2 && before.Rate >= 2.0/3.0-1e-9 && now.Pass == 0 && now.Total > 0 {
 			out = append(out, Regression{Kind: "case", Key: k, Before: before.Rate, After: 0,
 				Detail: fmt.Sprintf("%s passed %d/%d in the baseline and 0/%d now", k, before.Pass, before.Total, now.Total)})
 		}

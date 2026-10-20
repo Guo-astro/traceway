@@ -190,14 +190,33 @@ func (t *Submit) validate(p map[string]any) []string {
 		if v := str("category"); v != "" && !slices.Contains(DebugCategories, v) {
 			probs = append(probs, fmt.Sprintf("category %q is not one of %v", v, DebugCategories))
 		}
-		if c, ok := p["culprit"].(map[string]any); ok {
-			if f, _ := c["file"].(string); f == "" {
+		if raw, present := p["culprit"]; present {
+			if c, ok := raw.(map[string]any); !ok {
+				probs = append(probs, "culprit must be an object with file, symbol and line")
+			} else if f, _ := c["file"].(string); f == "" {
 				probs = append(probs, "culprit.file is required")
 			}
 		}
 		checkEvidence()
 	default:
 		need("summary", "changes")
+		if _, present := p["summary"]; present && strings.TrimSpace(str("summary")) == "" {
+			probs = append(probs, "summary must be a non-empty string")
+		}
+		if raw, present := p["changes"]; present {
+			if cs, ok := raw.([]any); !ok {
+				probs = append(probs, "changes must be an array (empty when you changed nothing)")
+			} else {
+				for i, c := range cs {
+					m, _ := c.(map[string]any)
+					a, _ := m["action"].(string)
+					tg, _ := m["target"].(string)
+					if a == "" || tg == "" {
+						probs = append(probs, fmt.Sprintf("changes[%d] needs an action and a target", i))
+					}
+				}
+			}
+		}
 	}
 	if c := str("confidence"); c != "" && !slices.Contains([]string{"low", "medium", "high"}, c) {
 		probs = append(probs, "confidence must be low, medium or high")

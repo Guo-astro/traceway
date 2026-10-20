@@ -23,6 +23,12 @@ func TestCompare(t *testing.T) {
 	if regs := Compare(&Results{Runs: base.casesAsRuns()}, base); len(regs) != 0 {
 		t.Fatalf("no change must not regress: %+v", regs)
 	}
+	once := NewBaseline(&Results{Runs: []*runner.Result{res("perf-b", "cli+skill", "opus", 1, "pass", 0), res("perf-c", "cli+skill", "opus", 1, "pass", 0)}})
+	for _, r := range Compare(&Results{Runs: []*runner.Result{res("perf-b", "cli+skill", "opus", 1, "fail", 0), res("perf-c", "cli+skill", "opus", 1, "pass", 0)}}, once) {
+		if r.Kind == "case" {
+			t.Fatalf("a case that passed once in the baseline is not a case regression after one failure: %+v", r)
+		}
+	}
 }
 
 // casesAsRuns rebuilds runs matching the baseline exactly.

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/tracewayapp/traceway/cli/test/evals/internal/agent"
 	"github.com/tracewayapp/traceway/cli/test/evals/internal/catalog"
 	"github.com/tracewayapp/traceway/cli/test/evals/internal/record"
 )
@@ -65,6 +66,12 @@ type Input struct {
 	SandboxImage string
 	EvalsRoot    string
 	Judge        *Judge
+	// Pristine is the workspace's Snapshot before the agent started; the
+	// hidden-tests grader diffs against it.
+	Pristine map[string]string
+	// Hold is the run's reservation of the cost cap; the judge's spending
+	// goes there (nil: straight to the judge's ledger).
+	Hold *agent.Hold
 }
 
 // All runs every applicable grader in a fixed order.

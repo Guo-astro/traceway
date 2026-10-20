@@ -29,9 +29,10 @@ expect:
       path: go.mod
       contains: ["go.opentelemetry.io/otel"]
     - kind: file
-      path: "*.go"
+      path: "**/*.go"
       contains: ["TRACEWAY_PROJECT_TOKEN|OTEL_EXPORTER_OTLP_HEADERS", "service\\.name|ServiceName|OTEL_SERVICE_NAME"]
     - kind: no_token_literal
+    - kind: no_token_printed
     - kind: endpoint_seen
       endpoint: "GET /api/hello"
     - kind: endpoint_seen
@@ -53,7 +54,7 @@ oracle:
   - read_file: go.mod
   - write_file: {path: telemetry.go, from: oracle/setup-go-nethttp/telemetry.go}
   - write_file: {path: main.go, from: oracle/setup-go-nethttp/main.go}
-  - shell: go get go.opentelemetry.io/otel go.opentelemetry.io/otel/sdk go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp && go mod tidy && go vet ./... && go test ./...
+  - shell: go get go.opentelemetry.io/otel@v1.47.0 go.opentelemetry.io/otel/sdk@v1.47.0 go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp@v1.47.0 go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp@v0.72.0 && go mod tidy && go vet ./... && go test ./...
   - finish:
       summary: |
         hello-api now exports traces to Traceway over OTLP/HTTP: telemetry.go sets up the SDK with an exporter to $TRACEWAY_URL/api/otel/v1/traces and the bearer token from $TRACEWAY_PROJECT_TOKEN (nothing is hard-coded), service.name hello-api, and the W3C propagator. Each route handler is wrapped with otelhttp so Traceway records the route pattern (GET /api/hello/{name}) instead of one row per URL. The app builds and its tests pass.

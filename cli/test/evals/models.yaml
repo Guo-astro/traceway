@@ -7,7 +7,8 @@
 # comparable over time, so a model change is a reviewed edit to this file.
 # Prices and supported_parameters were checked against
 # GET https://openrouter.ai/api/v1/models on 2026-10-17. The preflight reads live
-# prices; fallback_price is used only when that list cannot be fetched.
+# prices; fallback_price is used when that list cannot be fetched or does not
+# list the pinned id.
 #
 # estimate is the per-run token envelope the preflight multiplies by live
 # prices until baseline.json carries measured averages.

@@ -1,7 +1,7 @@
 // Package guard enforces the manual-only policy in code: paid
 // commands start in CI only inside a hand-dispatched cli-evals.yml run behind
-// the evals environment gate, locally only after a typed confirmation, and
-// always under a mandatory cost cap. The real OpenRouter client asks Live()
+// the evals environment gate, locally only after a confirmation typed on a
+// terminal, and always under a mandatory cost cap. The real OpenRouter client asks Live()
 // before every request, and Live() is false inside `go test`.
 package guard
 
@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -41,9 +42,11 @@ var otherCI = []string{
 type Request struct {
 	Command    string // run | resume
 	MaxCostUSD float64
-	Yes        bool
-	StdinTTY   bool
-	Getenv     func(string) string
+	// Yes is the workflow's --yes. It never replaces the typed confirmation
+	// of a local run.
+	Yes      bool
+	StdinTTY bool
+	Getenv   func(string) string
 	// Preflight is printed before the local confirmation prompt.
 	Preflight string
 	In        io.Reader
@@ -58,8 +61,8 @@ type Decision struct {
 
 // Decide applies the policy without side effects or prompts.
 func Decide(r Request) (Decision, error) {
-	if r.MaxCostUSD <= 0 {
-		return Decision{}, errors.New("--max-cost-usd is required for paid commands and must be greater than 0 (there is no default)")
+	if err := CheckCap(r.MaxCostUSD); err != nil {
+		return Decision{}, err
 	}
 	env := r.Getenv
 	if env("GITHUB_ACTIONS") == "true" {
@@ -83,12 +86,20 @@ func Decide(r Request) (Decision, error) {
 		}
 	}
 	if !r.StdinTTY {
-		if !r.Yes {
-			return Decision{}, errors.New("stdin is not a terminal: refusing a paid run without --yes (local paid runs are for harness development only)")
-		}
-		return Decision{}, nil
+		// A script or an agent's shell has no terminal: a local paid run
+		// needs a person to type yes, and --yes does not stand in for one.
+		return Decision{}, errors.New("stdin is not a terminal: a local paid run needs you to type yes on a terminal (--yes is for the dispatched workflow only)")
 	}
 	return Decision{Confirm: true}, nil
+}
+
+// CheckCap validates a --max-cost-usd value: a finite number above 0. NaN
+// and Inf parse as floats and would otherwise lift every cap.
+func CheckCap(usd float64) error {
+	if math.IsNaN(usd) || math.IsInf(usd, 0) || usd <= 0 {
+		return fmt.Errorf("--max-cost-usd is required for paid commands and must be a finite number greater than 0 (got %v; there is no default)", usd)
+	}
+	return nil
 }
 
 // Authorize applies the policy, prompts for the typed confirmation when one is

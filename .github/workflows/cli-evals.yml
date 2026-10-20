@@ -7,8 +7,9 @@ name: CLI Evals
 # It is the one exception to the label-gated CI pattern: every run spends real
 # money on OpenRouter, so a person dispatches it, reads the preflight estimate
 # in the job summary, and approves the paid job at the `evals` environment
-# gate (the only place OPENROUTER_API_KEY lives). `dry_run` runs everything
-# except the paid job for $0. The workflow never commits; update baseline.json
+# gate (the only place OPENROUTER_API_KEY lives; the preflight refuses a paid
+# run unless that environment has a required reviewer). `dry_run` runs
+# everything except the paid and report jobs for $0. The workflow never commits; update baseline.json
 # yourself with `twevals baseline update`. See cli/test/evals/README.md.
 on:
   workflow_dispatch:
@@ -41,7 +42,7 @@ on:
       max_cost_usd:
         type: string
         required: true
-        description: "hard cap for the whole dispatch in USD, no default"
+        description: "cap for the whole dispatch in USD, split per shard, no default"
       dry_run:
         type: boolean
         default: false
@@ -64,6 +65,10 @@ jobs:
   preflight:
     name: Preflight ($0)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Reads the evals environment's protection rules (the gate check below).
+      actions: read
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
     defaults:
@@ -89,6 +94,22 @@ jobs:
           fi
           if ! [[ "$RUNS" =~ ^[1-3]$ ]]; then
             echo "::error::runs must be 1, 2 or 3 (got '$RUNS')"; exit 1
+          fi
+
+      # GitHub creates a missing environment on first use with no protection
+      # rules, so a job naming `environment: evals` alone is no gate. Refuse
+      # the paid job unless the environment exists with a required reviewer.
+      - name: Check the evals gate
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          reviewers=$(gh api "repos/$GITHUB_REPOSITORY/environments/evals" \
+            --jq '[.protection_rules[]? | select(.type == "required_reviewers") | (.reviewers // [])[]] | length') || {
+            echo "::error::cannot read the evals environment; create it with a required reviewer before a paid run"; exit 1
+          }
+          if [ "${reviewers:-0}" -lt 1 ]; then
+            echo "::error::the evals environment has no required reviewer; add one (Settings > Environments > evals) before a paid run"; exit 1
           fi
 
       - name: Plan and estimate
@@ -139,7 +160,7 @@ jobs:
           SUITES: ${{ inputs.suites }}
         run: |
           if [ -n "$CASES" ]; then
-            go run ./cmd/twevals oracle -j 3 $(echo "$CASES" | tr ',' ' ')
+            go run ./cmd/twevals oracle -j 3 "$CASES"
           elif [ -n "$SUITES" ]; then
             go run ./cmd/twevals oracle -j 3 --suites "$SUITES"
           else
@@ -164,6 +185,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Setup Go
         uses: actions/setup-go@v7
@@ -196,7 +219,7 @@ jobs:
             find results -type f \( -name '*.json' -o -name '*.jsonl' -o -name '*.md' -o -name '*.log' -o -name '.env*' -o -name '*.txt' \) -print0 \
               | xargs -0 -r sed -i -E \
                   -e 's/sk-or-[A-Za-z0-9_-]+/sk-or-[REDACTED]/g' \
-                  -e 's/(tww|twp|tws|twa|twk)_[A-Za-z0-9_-]+/\1_[REDACTED]/g' \
+                  -e 's/(tww|twp|twr|tws|twa|twk)_[A-Za-z0-9_-]+/\1_[REDACTED]/g' \
                   -e 's/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/[REDACTED_JWT]/g'
             # Backend databases, CLI credential stores and env files the agent
             # wrote hold the run's tokens; never upload them.

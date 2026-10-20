@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -22,7 +23,7 @@ import (
 func HiddenTests(ctx context.Context, in *Input) *Verdict {
 	spec := in.Case.Expect.Code
 	v := newVerdict("hidden_tests", spec.Gating)
-	changed, err := changedFiles(in.Workspace)
+	changed, err := changedFiles(in.Workspace, in.Pristine)
 	if err != nil {
 		v.fail("read the diff: %v", err)
 		return v
@@ -72,17 +73,30 @@ func HiddenTests(ctx context.Context, in *Input) *Verdict {
 		cmd = exec.CommandContext(ctx, "sh", "-c", spec.Command)
 		cmd.Dir = in.Workspace
 		cmd.Env = hostTestEnv(in.Workspace)
+		// The timeout kills the whole group: go test's children would
+		// otherwise keep the output pipe open past it.
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	case in.SandboxImage != "" && dockerAvailable():
-		cmd = exec.CommandContext(ctx, "docker", "run", "--rm", "--network", "none",
+		name := fmt.Sprintf("twevals-hidden-%d-%d", os.Getpid(), time.Now().UnixNano())
+		cmd = exec.CommandContext(ctx, "docker", "run", "--rm", "--name", name, "--network", "none",
+			"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
 			"-v", in.Workspace+":/work", "-w", "/work", "-e", "HOME=/tmp", "-e", "GOFLAGS=-mod=mod", "-e", "GOCACHE=/tmp/gocache",
 			in.SandboxImage, "sh", "-c", spec.Command)
+		// Killing the docker client leaves the container running; remove it.
+		cmd.Cancel = func() error {
+			_ = exec.Command("docker", "rm", "-f", name).Run()
+			return cmd.Process.Kill()
+		}
 	default:
-		v.Skipped = true
-		v.note("skipped: no container runtime for the model's patch (set TWEVALS_HOST_TESTS=1 to run it on the host)")
+		v.note("tests not run: no container runtime for the model's patch (set TWEVALS_HOST_TESTS=1 to run it on the host)")
+		// The diff checks above still gate; only a clean diff is skipped.
+		v.Skipped = len(v.Failures) == 0
 		return v
 	}
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
+	cmd.WaitDelay = 10 * time.Second
 	err = cmd.Run()
 	tail := out.String()
 	if len(tail) > 3000 {
@@ -120,31 +134,6 @@ func dockerAvailable() bool {
 	return exec.Command("docker", "info").Run() == nil
 }
 
-func changedFiles(work string) ([]string, error) {
-	run := func(args ...string) ([]string, error) {
-		out, err := workspaceGit(work, args...).Output()
-		if err != nil {
-			return nil, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
-		}
-		var lines []string
-		for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-			if l != "" && !strings.HasPrefix(l, ".twevals") {
-				lines = append(lines, l)
-			}
-		}
-		return lines, nil
-	}
-	mod, err := run("diff", "--name-only", "HEAD")
-	if err != nil {
-		return nil, err
-	}
-	untracked, err := run("ls-files", "-o", "--exclude-standard")
-	if err != nil {
-		return nil, err
-	}
-	return append(mod, untracked...), nil
-}
-
 func anyGlob(g string, files []string) bool {
 	for _, f := range files {
 		if ok, _ := path.Match(g, f); ok || globAny(g, f) || f == g {
@@ -154,7 +143,15 @@ func anyGlob(g string, files []string) bool {
 	return false
 }
 
+// copyTree copies the hidden tests into the workspace. The agent may have
+// left symlinks there (the setup container can make them), so every target
+// directory must resolve inside dst and the file itself is never followed:
+// a planted link is replaced, not written through.
 func copyTree(src, dst string) error {
+	realDst, err := filepath.EvalSymlinks(dst)
+	if err != nil {
+		return err
+	}
 	return filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -162,12 +159,37 @@ func copyTree(src, dst string) error {
 		rel, _ := filepath.Rel(src, p)
 		target := filepath.Join(dst, rel)
 		if d.IsDir() {
+			if fi, err := os.Lstat(target); err == nil && !fi.IsDir() {
+				if err := os.Remove(target); err != nil {
+					return err
+				}
+			}
 			return os.MkdirAll(target, 0o755)
+		}
+		dir, err := filepath.EvalSymlinks(filepath.Dir(target))
+		if err != nil {
+			return err
+		}
+		if dir != realDst && !strings.HasPrefix(dir, realDst+string(filepath.Separator)) {
+			return fmt.Errorf("%s resolves outside the workspace", filepath.Dir(target))
 		}
 		raw, err := os.ReadFile(p)
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(target, raw, 0o644)
+		if fi, err := os.Lstat(target); err == nil && !fi.Mode().IsRegular() {
+			if err := os.Remove(target); err != nil {
+				return err
+			}
+		}
+		f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o644)
+		if err != nil {
+			return err
+		}
+		if _, err := f.Write(raw); err != nil {
+			f.Close()
+			return err
+		}
+		return f.Close()
 	})
 }

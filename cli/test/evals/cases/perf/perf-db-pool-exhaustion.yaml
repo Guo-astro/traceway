@@ -51,7 +51,7 @@ oracle:
       traceway endpoints chart --metric-type p99 --since 2d --interval-minutes 60 --output json
       | jq '[.series[] | select(.endpoint == "POST /api/checkout" or .endpoint == "GET /api/cart") | {endpoint, t: .timestamp, p99_ms: (.value | round)}]'
   - shell: >-
-      traceway logs query --since 24h --min-severity 13 --page-size 8 --output json
+      traceway logs query --since 3d --min-severity 13 --page-size 8 --output json
       | jq '{data: [.data[] | {timestamp, severityText, traceId, body, exception: .logAttributes["exception.message"]}]}'
   - shell: >-
       traceway exceptions list --since 3d --output json

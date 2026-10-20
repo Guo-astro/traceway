@@ -38,7 +38,10 @@ func Markdown(r *Results) string {
 	// An oracle run costs nothing, so its summary leaves money out.
 	paid := !h.Oracle
 	if paid {
-		fmt.Fprintf(&b, "- **Spend:** $%.2f (judge $%.2f) of a $%.2f cap\n", a.SpendUSD, a.JudgeUSD, h.MaxCostUSD)
+		fmt.Fprintf(&b, "- **Spend:** $%.2f (judge $%.2f) of a $%.2f cap\n", a.SpendUSD+h.ReplacedSpendUSD, a.JudgeUSD, h.MaxCostUSD)
+		if h.ReplacedSpendUSD > 0 {
+			fmt.Fprintf(&b, "  (including $%.2f spent on runs that a resume ran again)\n", h.ReplacedSpendUSD)
+		}
 	}
 	var st []string
 	for k, v := range a.Statuses {

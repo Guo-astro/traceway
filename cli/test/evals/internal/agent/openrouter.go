@@ -1,7 +1,7 @@
 // Package agent drives a model through the eval: an OpenRouter Chat
 // Completions client (the same code path for every model and the judge), the
-// tool-calling loop with budgets, prompt caching, transcripts, a
-// record/replay cache, and the fake model that plays oracle trajectories.
+// tool-calling loop with budgets and the cost ledger, prompt caching,
+// transcripts, and the fake model that plays oracle trajectories.
 package agent
 
 import (
@@ -133,7 +133,7 @@ type Client struct {
 	BaseURL string
 	Key     string
 	HTTP    *http.Client
-	// Retries on 429/5xx/timeouts (default 5).
+	// Retries on 408/429/5xx/timeouts (default 5).
 	Retries int
 }
 
@@ -234,7 +234,7 @@ func (c *Client) once(ctx context.Context, req *Request) (*Response, error) {
 	if err != nil {
 		return nil, &RetryableError{err}
 	}
-	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode >= 500 {
 		return nil, &RetryableError{fmt.Errorf("openrouter HTTP %d: %s", resp.StatusCode, clip(raw))}
 	}
 	if resp.StatusCode != http.StatusOK {

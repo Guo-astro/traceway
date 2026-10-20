@@ -3,6 +3,7 @@ package tools
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"io/fs"
@@ -24,6 +25,8 @@ import (
 type uctx struct {
 	hc  interp.HandlerContext
 	run *shellRun
+	// ctx carries the command's timeout (nil for jq and awk).
+	ctx context.Context
 }
 
 func (u *uctx) errf(format string, a ...any) { fmt.Fprintf(u.hc.Stderr, format+"\n", a...) }

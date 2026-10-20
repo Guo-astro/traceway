@@ -39,7 +39,8 @@ eval-plan *args:
 eval-dispatch *args:
     gh workflow run cli-evals.yml {{args}}
 
-# Paid, local, for harness development only: asks you to type yes.
+# Paid, local, for harness development only: asks you to type yes on a
+# terminal, and refuses to run without one.
 eval-local *args:
     cd test/evals && go run ./cmd/twevals run {{args}}
 

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
-	"os"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -87,13 +86,15 @@ func checkState(ctx context.Context, in *Input, a catalog.StateAssert) error {
 		}
 	case "page_count":
 		var out struct {
-			Data []json.RawMessage `json:"data"`
+			Pagination struct {
+				Total int64 `json:"total"`
+			} `json:"pagination"`
 		}
-		if err := postJSON("/api/pages", q, map[string]any{"status": a.Status, "pagination": map[string]int{"page": 1, "pageSize": 100}}, &out); err != nil {
+		if err := postJSON("/api/pages", q, map[string]any{"status": a.Status, "pagination": map[string]int{"page": 1, "pageSize": 1}}, &out); err != nil {
 			return err
 		}
-		if !a.Count.Contains(float64(len(out.Data))) {
-			return fmt.Errorf("%d %s pages, want %s", len(out.Data), a.Status, a.Count)
+		if !a.Count.Contains(float64(out.Pagination.Total)) {
+			return fmt.Errorf("%d %s pages, want %s", out.Pagination.Total, a.Status, a.Count)
 		}
 	case "rule":
 		var out struct {
@@ -141,7 +142,12 @@ func checkState(ctx context.Context, in *Input, a catalog.StateAssert) error {
 		}
 		var archived []string
 		for _, h := range a.Among {
-			if all[h] && !visible[h] {
+			if !all[h] {
+				// Absent even with archived issues included: a typo or a
+				// window that misses it would otherwise read as unarchived.
+				return fmt.Errorf("issue %s is not in the project's issue list", h)
+			}
+			if !visible[h] {
 				archived = append(archived, h)
 			}
 		}
@@ -154,18 +160,29 @@ func checkState(ctx context.Context, in *Input, a catalog.StateAssert) error {
 	case "post_mortem":
 		return checkPostMortem(ctx, in, a, getJSON)
 	case "agent_writes":
-		var out struct {
-			Data []struct {
-				Route      string `json:"route"`
-				Method     string `json:"method"`
-				StatusCode int    `json:"statusCode"`
-			} `json:"data"`
+		type event struct {
+			Route      string `json:"route"`
+			Method     string `json:"method"`
+			StatusCode int    `json:"statusCode"`
 		}
-		if err := getJSON(fmt.Sprintf("/api/organizations/%d/agent-activity", st.OrgID()), map[string]string{"pageSize": "100"}, &out); err != nil {
-			return err
+		var events []event
+		for page := 1; ; page++ {
+			var out struct {
+				Data       []event `json:"data"`
+				Pagination struct {
+					TotalPages int64 `json:"totalPages"`
+				} `json:"pagination"`
+			}
+			if err := getJSON(fmt.Sprintf("/api/organizations/%d/agent-activity", st.OrgID()), map[string]string{"page": strconv.Itoa(page), "pageSize": "100"}, &out); err != nil {
+				return err
+			}
+			events = append(events, out.Data...)
+			if int64(page) >= out.Pagination.TotalPages || len(out.Data) == 0 || page >= 50 {
+				break
+			}
 		}
 		n := 0
-		for _, e := range out.Data {
+		for _, e := range events {
 			if a.Route != "" && !strings.Contains(e.Method+" "+e.Route, a.Route) {
 				continue
 			}
@@ -454,7 +471,7 @@ func checkFiles(root string, a catalog.StateAssert) error {
 		if err != nil {
 			return nil
 		}
-		if d.IsDir() && (d.Name() == ".git" || d.Name() == "node_modules" || d.Name() == ".skills") {
+		if d.IsDir() && (d.Name() == ".git" || d.Name() == "node_modules" || d.Name() == ".skills" || strings.HasPrefix(d.Name(), ".twevals")) {
 			return filepath.SkipDir
 		}
 		if d.IsDir() {
@@ -475,7 +492,7 @@ func checkFiles(root string, a catalog.StateAssert) error {
 	}
 	var all strings.Builder
 	for _, m := range matched {
-		raw, _ := os.ReadFile(m)
+		raw, _ := readRegular(m)
 		all.Write(raw)
 		all.WriteByte('\n')
 	}
@@ -519,8 +536,8 @@ func checkNoTokens(root string, tokens []string) error {
 			if strings.HasPrefix(base, ".env") || strings.HasPrefix(rel, ".skills/") || strings.HasPrefix(rel, ".twevals") {
 				continue
 			}
-			raw, err := os.ReadFile(filepath.Join(root, rel))
-			if err != nil {
+			raw, ok := readRegular(filepath.Join(root, rel))
+			if !ok {
 				continue
 			}
 			for _, t := range tokens {
@@ -538,14 +555,14 @@ func checkNoTokens(root string, tokens []string) error {
 		if err != nil {
 			return nil
 		}
-		if d.IsDir() && (d.Name() == ".git" || d.Name() == "node_modules" || d.Name() == ".skills") {
+		if d.IsDir() && (d.Name() == ".git" || d.Name() == "node_modules" || d.Name() == ".skills" || strings.HasPrefix(d.Name(), ".twevals")) {
 			return filepath.SkipDir
 		}
 		if d.IsDir() || strings.HasPrefix(d.Name(), ".env") {
 			return nil
 		}
-		raw, err := os.ReadFile(p)
-		if err != nil {
+		raw, ok := readRegular(p)
+		if !ok {
 			return nil
 		}
 		for _, t := range tokens {
@@ -563,7 +580,7 @@ func checkNoTokens(root string, tokens []string) error {
 }
 
 func gitVisibleFiles(root string) ([]string, bool) {
-	out, err := workspaceGit(root, "ls-files", "-z", "-c", "-o", "--exclude-standard").Output()
+	out, err := workspaceGit(root, nil, "ls-files", "-z", "-c", "-o", "--exclude-standard")
 	if err != nil {
 		return nil, false
 	}

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tracewayapp/traceway/cli/test/evals/internal/agent"
@@ -110,46 +111,74 @@ func Jobs(units []catalog.Unit, models []*catalog.Model, runs int) []Job {
 	return out
 }
 
-// Execute runs every job with up to Jobs in parallel. Before each run starts
-// it checks the ledger: at the ceiling, in-flight runs finish, nothing new
-// starts, and the remaining runs are recorded as cost_ceiling.
+// Execute runs every job with up to Jobs in parallel. With a ceiling, each
+// run reserves its cap from the ledger as it starts: up to three times its
+// even share of --max-cost-usd, and no more than an even split of what is
+// neither spent nor reserved among the runs that can still be in flight. A run
+// whose split falls below its even share waits for a run in flight to return
+// what it did not use; with nothing in flight it is not started and is
+// recorded as cost_ceiling. After an interrupt nothing new starts.
 func Execute(ctx context.Context, opt Options, jobs []Job) []*Result {
 	par := opt.Jobs
 	if par <= 0 {
 		par = 1
 	}
+	var todo []int
+	for i, j := range jobs {
+		if !opt.Skip[RunKey(j.Unit.Case.ID, j.Unit.Arm, j.Model.Key, j.Idx)] {
+			todo = append(todo, i)
+		}
+	}
 	results := make([]*Result, len(jobs))
 	sem := make(chan struct{}, par)
+	finished := make(chan struct{}, len(todo))
+	var inFlight atomic.Int32
 	var wg sync.WaitGroup
-	perRun := 0.0
-	if opt.Ledger != nil && opt.Ledger.Cap > 0 && len(jobs) > 0 {
-		perRun = opt.Ledger.Cap / float64(len(jobs)) * 3
+	capped := opt.Ledger != nil && opt.Ledger.Cap > 0 && len(todo) > 0
+	even, perRun := 0.0, 0.0
+	if capped {
+		even = opt.Ledger.Cap / float64(len(todo))
+		perRun = even * 3
 	}
-	for i, j := range jobs {
-		key := RunKey(j.Unit.Case.ID, j.Unit.Arm, j.Model.Key, j.Idx)
-		if opt.Skip[key] {
-			continue
+	for n, i := range todo {
+		j := jobs[i]
+		notStarted := func(status, why string) {
+			results[i] = &Result{Case: j.Unit.Case.ID, Suite: j.Unit.Case.Suite, Arm: j.Unit.Arm, Model: j.Model.Key, ModelID: j.Model.ID, RunIdx: j.Idx,
+				Status: status, Error: "not started: " + why}
 		}
 		sem <- struct{}{}
-		if opt.Ledger != nil && opt.Ledger.Exhausted() {
+		if ctx.Err() != nil {
 			<-sem
-			results[i] = &Result{Case: j.Unit.Case.ID, Suite: j.Unit.Case.Suite, Arm: j.Unit.Arm, Model: j.Model.Key, ModelID: j.Model.ID, RunIdx: j.Idx,
-				Status: agent.StopCeiling, Error: "not started: the --max-cost-usd ceiling was reached"}
+			notStarted(agent.StopInfra, "interrupted")
 			continue
 		}
-		wg.Add(1)
-		go func(i int, j Job) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			// Each run may use up to three times its even share, but no more
-			// than its slice of what is left, so the runs in flight cannot
-			// together overshoot the ceiling by much.
-			cap := perRun
-			if opt.Ledger != nil && cap > 0 {
-				cap = min(cap, opt.Ledger.Remaining()/float64(par))
+		var hold *agent.Hold
+		if capped {
+			slots := float64(min(par, len(todo)-n))
+			share := min(perRun, opt.Ledger.Available()/slots)
+			for share < even && inFlight.Load() > 0 && ctx.Err() == nil {
+				<-finished
+				share = min(perRun, opt.Ledger.Available()/slots)
 			}
-			results[i] = runOne(ctx, opt, j, cap)
-		}(i, j)
+			if share < even || ctx.Err() != nil {
+				<-sem
+				notStarted(agent.StopCeiling, "the --max-cost-usd ceiling was reached")
+				continue
+			}
+			hold = opt.Ledger.Reserve(share)
+		}
+		inFlight.Add(1)
+		wg.Add(1)
+		go func(i int, j Job, hold *agent.Hold) {
+			defer wg.Done()
+			defer func() {
+				hold.Release()
+				inFlight.Add(-1)
+				finished <- struct{}{}
+				<-sem
+			}()
+			results[i] = startRun(ctx, opt, j, hold)
+		}(i, j, hold)
 	}
 	wg.Wait()
 	var out []*Result
@@ -160,6 +189,9 @@ func Execute(ctx context.Context, opt Options, jobs []Job) []*Result {
 	}
 	return out
 }
+
+// startRun is runOne; the scheduling tests replace it.
+var startRun = runOne
 
 func logf(opt Options, format string, a ...any) {
 	if opt.Log != nil {
@@ -191,7 +223,7 @@ func submitFor(suite string) string {
 	}
 }
 
-func runOne(ctx context.Context, opt Options, j Job, runCap float64) (res *Result) {
+func runOne(ctx context.Context, opt Options, j Job, hold *agent.Hold) (res *Result) {
 	c := j.Unit.Case
 	arm := j.Unit.Arm
 	res = &Result{Case: c.ID, Suite: c.Suite, Arm: arm, Model: j.Model.Key, ModelID: j.Model.ID, RunIdx: j.Idx}
@@ -283,12 +315,20 @@ func runOne(ctx context.Context, opt Options, j Job, runCap float64) (res *Resul
 	if err := installSkills(opt.RepoRoot, work, surf.skills); err != nil {
 		return infra(err)
 	}
+	var pristine map[string]string
+	if resolved.Expect.Code != nil {
+		if pristine, err = grade.Snapshot(work); err != nil {
+			return infra(err)
+		}
+	}
 	if surf.setupShell {
 		port, err := env.FreePort()
 		if err != nil {
 			return infra(err)
 		}
-		surf.containerEnv = setupEnv(resolved, inst, projects, port)
+		if surf.containerEnv, err = setupEnv(resolved, inst, projects, port); err != nil {
+			return infra(err)
+		}
 	}
 
 	sb := &tools.Sandbox{Root: work, ReadOnly: []string{".skills"}}
@@ -308,12 +348,14 @@ func runOne(ctx context.Context, opt Options, j Job, runCap float64) (res *Resul
 		}
 		return false, false
 	}
+	var agentShell *ContainerShell
 	if surf.setupShell {
 		cs, err := startContainerShell(ctx, opt, work, surf)
 		if err != nil {
 			return infra(err)
 		}
 		defer cs.Close()
+		agentShell = cs
 		toolset = append(toolset, cs)
 	} else {
 		sh := &tools.Shell{Sandbox: sb, Git: true, Denied: deniedFor(arm)}
@@ -381,7 +423,7 @@ func runOne(ctx context.Context, opt Options, j Job, runCap float64) (res *Resul
 	}
 	run := agent.Run(ctx, agent.Config{
 		Model: model, Chat: chat, Tools: toolset, System: system, Prompt: prompt, SubmitTool: surf.submit,
-		Budget: resolved.Budget, RunCap: runCap, Ledger: opt.Ledger, Price: opt.Prices[j.Model.Key], Transcript: tr,
+		Budget: resolved.Budget, Hold: hold, Ledger: opt.Ledger, Price: opt.Prices[j.Model.Key], Transcript: tr,
 		AfterCall: func(ctx context.Context, cl *record.Call) {
 			callsMu.Lock()
 			calls = append(calls, cl)
@@ -392,6 +434,11 @@ func runOne(ctx context.Context, opt Options, j Job, runCap float64) (res *Resul
 		SkillLoaded: func() []string { return loaded },
 	})
 	writeJSON(filepath.Join(dir, "run.json"), run)
+	if agentShell != nil {
+		// Whatever the agent left running (its own copy of the app on PORT)
+		// must be gone before the verify step starts the app afresh.
+		agentShell.Close()
+	}
 
 	res.Providers = run.Providers
 	res.Metrics = metricsOf(run)
@@ -399,6 +446,9 @@ func runOne(ctx context.Context, opt Options, j Job, runCap float64) (res *Resul
 		if errs := fake.Errors(); len(errs) > 0 {
 			res.Error = "oracle: " + strings.Join(errs, "; ")
 		}
+	}
+	if errs := hooks.errors(); len(errs) > 0 {
+		return infra(fmt.Errorf("hook failed: %s", strings.Join(errs, "; ")))
 	}
 	switch run.StopReason {
 	case agent.StopInfra:
@@ -412,7 +462,8 @@ func runOne(ctx context.Context, opt Options, j Job, runCap float64) (res *Resul
 	in := &grade.Input{
 		Case: resolved, Arm: arm, Run: run, Seed: jsonify(exposed), Workspace: work,
 		State: &stateReader{inst: inst, projects: projects, primary: primary}, FakeModel: opt.Oracle,
-		AllowHostTests: opt.AllowHostTests, SandboxImage: opt.SandboxImage, EvalsRoot: opt.EvalsRoot, Judge: opt.Judge,
+		AllowHostTests: opt.AllowHostTests, SandboxImage: opt.SandboxImage, EvalsRoot: opt.EvalsRoot, Judge: opt.Judge, Hold: hold,
+		Pristine: pristine,
 	}
 	if resolved.Setup != nil && resolved.Setup.Verify != nil {
 		if v := verifySetup(ctx, opt, resolved, work, inst, projects, surf); v != nil {

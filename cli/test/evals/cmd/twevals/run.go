@@ -160,8 +160,8 @@ func cmdPlan(ctx context.Context, args []string) error {
 	summary := fs.String("summary", "", "append the preflight table to this file (e.g. $GITHUB_STEP_SUMMARY)")
 	prices := fs.String("prices", "", "read prices from a saved /api/v1/models response instead of fetching")
 	_ = fs.Parse(args)
-	if *maxCost <= 0 {
-		return &exitError{2, "--max-cost-usd is required and must be greater than 0 (there is no default)"}
+	if err := guard.CheckCap(*maxCost); err != nil {
+		return &exitError{2, err.Error()}
 	}
 	ws, err := load()
 	if err != nil {
@@ -207,7 +207,6 @@ type runConfig struct {
 	Models    string            `json:"models"`
 	Runs      int               `json:"runs"`
 	Judge     bool              `json:"judge"`
-	Cache     string            `json:"cache"`
 	Jobs      int               `json:"jobs"`
 }
 
@@ -221,9 +220,8 @@ func cmdRun(ctx context.Context, args []string, resumeDir string) error {
 	maxCost := fs.Float64("max-cost-usd", 0, "hard cap for this invocation (required, no default)")
 	jobs := fs.Int("j", 4, "parallel runs")
 	keep := fs.Bool("keep", false, "keep every run directory (backend db, workspace)")
-	cache := fs.String("cache", envOr("EVAL_CACHE", agent.CacheOff), "model response cache: record | replay | off")
 	judge := fs.Bool("judge", true, "score reports with the LLM judge (non-gating)")
-	yes := fs.Bool("yes", false, "proceed without a terminal (CI); a local terminal still asks")
+	yes := fs.Bool("yes", false, "the dispatched workflow's confirmation; a local run always asks you to type yes")
 	out := fs.String("out", "", "results directory (default results/<run-id>)")
 	_ = fs.Parse(args)
 
@@ -231,7 +229,7 @@ func cmdRun(ctx context.Context, args []string, resumeDir string) error {
 	if err != nil {
 		return err
 	}
-	cfg := runConfig{Selection: sf.selection(), Models: *models, Runs: *runs, Judge: *judge, Cache: *cache, Jobs: *jobs}
+	cfg := runConfig{Selection: sf.selection(), Models: *models, Runs: *runs, Judge: *judge, Jobs: *jobs}
 	cfg.Selection.Shard = *shard
 	outDir := *out
 	skip := map[string]bool{}
@@ -267,9 +265,6 @@ func cmdRun(ctx context.Context, args []string, resumeDir string) error {
 		return &exitError{2, err.Error()}
 	}
 	var chatter agent.Chatter = client
-	if cfg.Cache != agent.CacheOff {
-		chatter = &agent.CachedChatter{Inner: client, Dir: filepath.Join(ws.root, ".cache", "models"), Mode: cfg.Cache}
-	}
 	runID := time.Now().UTC().Format("20060102-150405")
 	if outDir == "" {
 		outDir = filepath.Join(ws.root, "results", runID)
@@ -289,11 +284,16 @@ func cmdRun(ctx context.Context, args []string, resumeDir string) error {
 	if err != nil {
 		return err
 	}
+	priced := chosen
+	if cfg.Judge && ws.models.Judge != nil {
+		priced = append(slices.Clone(chosen), ws.models.Judge)
+	}
+	prices := pricesByKey(ctx, ws, priced)
 	opt := runner.Options{EvalsRoot: ws.root, RepoRoot: ws.repo, OutDir: outDir, Bins: bins, Models: chosen, Runs: cfg.Runs, Jobs: cfg.Jobs,
 		Keep: *keep, Chat: func(*catalog.Model) agent.Chatter { return chatter }, Ledger: ledger, Log: os.Stderr, Skip: skip,
-		Prices: pricesByKey(ctx, ws, chosen), AllowHostTests: os.Getenv("TWEVALS_HOST_TESTS") == "1"}
+		Prices: prices, AllowHostTests: os.Getenv("TWEVALS_HOST_TESTS") == "1"}
 	if cfg.Judge {
-		opt.Judge = &grade.Judge{Chat: chatter, Model: ws.models.Judge, Ledger: ledger}
+		opt.Judge = &grade.Judge{Chat: chatter, Model: ws.models.Judge, Ledger: ledger, Price: prices[ws.models.Judge.Key]}
 	}
 	opt.SandboxImage = sandboxImage(ctx, ws, units)
 	header := report.NewHeader(ws.repo, runID, ws.models, bins.Hash, os.Args)
@@ -301,7 +301,15 @@ func cmdRun(ctx context.Context, args []string, resumeDir string) error {
 	results := runner.Execute(ctx, opt, runner.Jobs(units, chosen, cfg.Runs))
 	if resumeDir != "" {
 		if prev, err := report.Load(resumeDir); err == nil {
-			results = mergeResume(prev.Runs, results)
+			// The caps and the spend of every invocation add up: the runs a
+			// resume ran again keep what they cost the first time.
+			var replaced float64
+			results, replaced = mergeResume(prev.Runs, results)
+			header.MaxCostUSD += prev.Header.MaxCostUSD
+			header.ReplacedSpendUSD = prev.Header.ReplacedSpendUSD + replaced
+			if !prev.Header.Started.IsZero() {
+				header.Started = prev.Header.Started
+			}
 		}
 	}
 	header.Finished = time.Now().UTC()
@@ -324,7 +332,7 @@ func partialExit(results []*runner.Result) error {
 		}
 	}
 	if ceiling > 0 {
-		return &exitError{2, fmt.Sprintf("partial: %d runs not started at the cost ceiling (continue with twevals resume)", ceiling)}
+		return &exitError{2, fmt.Sprintf("partial: %d runs were stopped or not started at the cost ceiling (continue with twevals resume)", ceiling)}
 	}
 	if len(results) > 0 && float64(infra)/float64(len(results)) > 0.10 {
 		return &exitError{2, fmt.Sprintf("partial: %d of %d runs hit infra errors", infra, len(results))}
@@ -347,11 +355,4 @@ func pricesByKey(ctx context.Context, ws *workspace, models []*catalog.Model) ma
 		}
 	}
 	return out
-}
-
-func envOr(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return def
 }

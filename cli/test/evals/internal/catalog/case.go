@@ -115,13 +115,11 @@ type Credential struct {
 
 // SetupSpec configures a setup-suite case.
 type SetupSpec struct {
-	Template string `yaml:"template"` // testdata/setup-templates/<template>
-	Path     string `yaml:"path"`     // fast | plan
+	// Path names the setup skill's path the case exercises, fast or plan.
+	// The harness does not read it; Token and ApproveDrafts set the run up.
+	Path string `yaml:"path"`
 	// Token is what the prompt hands the agent: ingest | setup.
 	Token string `yaml:"token"`
-	// Projects the harness creates up front (fast path) or expects the
-	// approved plan to create (plan path).
-	Projects []SetupProject `yaml:"projects"`
 	// ApproveDrafts makes the harness approve every pending setup draft.
 	ApproveDrafts bool `yaml:"approve_drafts"`
 	// Env is the container environment of the agent's shell and of the
@@ -147,11 +145,8 @@ type SetupVerify struct {
 	Wait     Duration `yaml:"wait"`
 }
 
-// SetupProject is one Traceway project of a setup case.
-type SetupProject struct {
-	Name      string `yaml:"name"`
-	Framework string `yaml:"framework"`
-}
+// HookActions are the actions a hook may name (runner/hooks.go).
+var HookActions = []string{"edit_post_mortem", "stub_healthy", "stub_unhealthy", "sleep", "approve_setup_draft"}
 
 // Hook is a harness action triggered after a matching agent call.
 type Hook struct {
@@ -266,7 +261,6 @@ type StateAssert struct {
 	Exists         *bool             `yaml:"exists"`
 	Route          string            `yaml:"route"`
 	HTTPStatus     *Range            `yaml:"http_status"`
-	Value          string            `yaml:"value"`
 	Projects       []string          `yaml:"projects"`
 	Project        string            `yaml:"project"`
 	Frameworks     map[string]string `yaml:"frameworks"`
@@ -427,6 +421,17 @@ func (d Duration) D() time.Duration { return time.Duration(d) }
 
 var idRe = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)+$`)
 
+// suiteArms are the arms a suite can run: write cases need a write surface,
+// and the setup arm (the container shell) belongs to the setup suite alone.
+// perf and debug take any other arm (a debug case may check that an agent
+// with write access writes nothing).
+var suiteArms = map[string][]string{
+	"perf":  {ArmCLISkill, ArmCLINoSkill, ArmMCP, ArmCLIWriteSkill, ArmMCPWrite},
+	"debug": {ArmCLISkill, ArmCLINoSkill, ArmMCP, ArmCLIWriteSkill, ArmMCPWrite},
+	"write": {ArmCLIWriteSkill, ArmMCPWrite},
+	"setup": {ArmCLISetupSkill},
+}
+
 // Validate checks a case for structural errors that YAML decoding cannot.
 func (c *Case) Validate() error {
 	var errs []string
@@ -484,6 +489,29 @@ func (c *Case) Validate() error {
 	}
 	if c.Suite == "setup" && c.Setup == nil {
 		add("setup cases need a setup block")
+	}
+	if c.Setup != nil {
+		if c.Setup.Path != "" && c.Setup.Path != "fast" && c.Setup.Path != "plan" {
+			add("setup.path must be fast or plan, got %q", c.Setup.Path)
+		}
+		if c.Setup.Token != "" && c.Setup.Token != "ingest" && c.Setup.Token != "setup" {
+			add("setup.token must be ingest or setup, got %q", c.Setup.Token)
+		}
+	}
+	for _, a := range c.Arms {
+		if ok := suiteArms[c.Suite]; ok != nil && !slices.Contains(ok, a) {
+			add("arm %q does not run the %s suite (its arms: %v)", a, c.Suite, ok)
+		}
+	}
+	if c.Suite == "debug" && c.Expect.Answer != nil {
+		if ans := c.Expect.Answer; ans.Category == "" && ans.IssueHash == "" && ans.Culprit == nil {
+			add("debug cases need expect.answer.category, issue_hash or culprit")
+		}
+	}
+	for i, h := range c.Hooks {
+		if !slices.Contains(HookActions, h.Action) {
+			add("hooks[%d]: unknown action %q (one of %v)", i, h.Action, HookActions)
+		}
 	}
 	if c.Suite != "setup" && c.Distractor == "" && !slices.Contains(c.Tags, "control") {
 		add("distractor is required (or tag the case control)")

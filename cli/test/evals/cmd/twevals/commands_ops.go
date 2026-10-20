@@ -21,12 +21,16 @@ import (
 	"github.com/tracewayapp/traceway/cli/test/evals/internal/seed"
 )
 
-func mergeResume(prev, now []*runner.Result) []*runner.Result {
+func mergeResume(prev, now []*runner.Result) ([]*runner.Result, float64) {
 	byKey := map[string]*runner.Result{}
 	for _, r := range prev {
 		byKey[r.Key()] = r
 	}
+	replaced := 0.0
 	for _, r := range now {
+		if old, ok := byKey[r.Key()]; ok {
+			replaced += old.Metrics.CostUSD + old.Metrics.JudgeCostUSD
+		}
 		byKey[r.Key()] = r
 	}
 	out := make([]*runner.Result, 0, len(byKey))
@@ -34,7 +38,7 @@ func mergeResume(prev, now []*runner.Result) []*runner.Result {
 		out = append(out, r)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Key() < out[j].Key() })
-	return out
+	return out, replaced
 }
 
 // sandboxImage builds the container image when the selection needs it (the
@@ -104,7 +108,7 @@ func cmdEnvUp(ctx context.Context, args []string) error {
 	exposed, _ := json.MarshalIndent(sc.Exposed(), "", "  ")
 	pat, _ := env.CreatePAT(ctx, inst.Backend, inst.Admin.JWT, "env up", "read", 0)
 	fmt.Printf("Case %s is seeded (%+v).\n\nDashboard: %s\nLogin:     %s / %s\nRead PAT:  %s\n  %s login --url %s --token %s\n\nseed.json:\n%s\n\nCtrl-C to stop. Data dir: %s\n",
-		c.ID, sc.Stats(), inst.Backend.URL, env.AdminEmail, env.AdminPassword, pat, bins.CLI, inst.Backend.URL, pat, exposed, dir)
+		c.ID, sc.Stats(), inst.Backend.URL, inst.Admin.Email, inst.Admin.Password, pat, bins.CLI, inst.Backend.URL, pat, exposed, dir)
 	<-ctx.Done()
 	return nil
 }
@@ -136,7 +140,17 @@ func cmdReport(args []string) error {
 	}
 	var res *report.Results
 	if *merge || len(parts) > 1 {
-		res = report.Merge(parts)
+		if *out == "" {
+			return &exitError{2, "merging several run directories needs --out (writing into the first one would overwrite that shard's results)"}
+		}
+		merged, notes, err := report.Merge(parts)
+		if err != nil {
+			return &exitError{2, err.Error()}
+		}
+		for _, n := range notes {
+			fmt.Fprintln(os.Stderr, "note:", n)
+		}
+		res = merged
 	} else {
 		res = parts[0]
 	}

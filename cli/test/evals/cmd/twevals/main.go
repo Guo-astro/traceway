@@ -3,7 +3,7 @@
 // Manual only. Paid runs happen in the CLI Evals workflow, which a person
 // starts by hand (workflow_dispatch) and approves at the evals environment
 // gate. `twevals run` refuses every other CI context, and locally it needs a
-// typed confirmation. `twevals oracle` and `twevals plan` are free.
+// confirmation typed on a terminal. `twevals oracle` and `twevals plan` are free.
 package main
 
 import (
@@ -21,14 +21,14 @@ Free:
   twevals list    [--preset P] [--suites S] [--tags T] [--cases GLOB] [--arms A]
   twevals plan    [selection] --models opus,astra [--runs N] --max-cost-usd X [--shards] [--out plan.json] [--summary FILE]
   twevals oracle  [--all | <case-id>... | --suites S] [--arms A] [-j N] [--keep] [--out DIR]
-  twevals env up  <case-id> [--arm A]
+  twevals env up  <case-id>
   twevals report  <run-dir>... [--merge] [--out DIR]
   twevals compare <run-dir> [baseline.json]
   twevals baseline update <run-dir> [--out baseline.json]
 
 Paid (OpenRouter; guarded, see README):
-  twevals run     [selection] [--shard SUITE] --models opus,astra --max-cost-usd X [--runs N] [-j N] [--keep] [--cache record|replay|off] [--judge=true] [--yes]
-  twevals resume  <run-dir> --max-cost-usd X [--yes]
+  twevals run     [selection] [--shard SUITE] --models opus,astra --max-cost-usd X [--runs N] [-j N] [--keep] [--judge=true]
+  twevals resume  <run-dir> --max-cost-usd X
 
 Selection flags: --preset smoke|core|full, --cases (comma-separated ids or globs; overrides the preset), --suites, --tags, --arms.
 list defaults to --preset full, plan and run to --preset smoke. oracle writes results.json and summary.md to --out

@@ -23,8 +23,9 @@ type Config struct {
 	Prompt     string
 	SubmitTool string
 	Budget     catalog.Budget
-	// RunCap is this run's share of --max-cost-usd (0 = no cap).
-	RunCap float64
+	// Hold is this run's reservation of --max-cost-usd (nil = no cap); its
+	// spending goes there, and to Ledger when there is no hold.
+	Hold   *Hold
 	Ledger *Ledger
 	// Price estimates cost when the provider reports none.
 	Price      catalog.Price
@@ -71,6 +72,7 @@ func Run(ctx context.Context, cfg Config) *record.Run {
 	nudged := false
 	callN := 0
 	outputTokens := 0
+	lastTurnUSD := 0.0
 	providers := map[string]bool{}
 	finish := func(reason, detail string) *record.Run {
 		run.StopReason, run.StopDetail = reason, detail
@@ -97,8 +99,12 @@ func Run(ctx context.Context, cfg Config) *record.Run {
 		if run.Turns == 0 && cfg.Ledger.Exhausted() {
 			return finish(StopCeiling, "the dispatch's --max-cost-usd ceiling was reached")
 		}
-		if cfg.RunCap > 0 && run.Usage.CostUSD >= cfg.RunCap {
-			return finish(StopBudget, fmt.Sprintf("run cost cap $%.2f reached", cfg.RunCap))
+		// The next call costs at least about as much as the last one (the
+		// context only grows), so stop before it would cross the run's share.
+		// This is the harness's cap, not the model's budget: the run is
+		// recorded as cost_ceiling, left out of pass rates and resumable.
+		if h := cfg.Hold; h != nil && h.Cap > 0 && run.Turns > 0 && h.Spent()+lastTurnUSD > h.Cap {
+			return finish(StopCeiling, fmt.Sprintf("run cost cap $%.2f reached (spent $%.4f, the last call cost $%.4f)", h.Cap, h.Spent(), lastTurnUSD))
 		}
 		run.Turns++
 		req := &Request{
@@ -125,9 +131,14 @@ func Run(ctx context.Context, cfg Config) *record.Run {
 			}
 			return finish(StopInfra, err.Error())
 		}
-		u := usageOf(resp, cfg.Price)
+		u := UsageOf(resp, cfg.Price)
 		run.Usage.Add(u)
-		cfg.Ledger.Add(cfg.Model.Key, u.CostUSD)
+		lastTurnUSD = u.CostUSD
+		if cfg.Hold != nil {
+			cfg.Hold.Add(cfg.Model.Key, u.CostUSD)
+		} else {
+			cfg.Ledger.Add(cfg.Model.Key, u.CostUSD)
+		}
 		outputTokens += u.OutputTokens - u.ReasoningTokens
 		if resp.Provider != "" {
 			providers[resp.Provider] = true
@@ -212,7 +223,9 @@ func nonEmpty(s string) string {
 	return s
 }
 
-func usageOf(r *Response, p catalog.Price) record.Usage {
+// UsageOf reads a response's usage, estimating its cost from p when the
+// provider reported none.
+func UsageOf(r *Response, p catalog.Price) record.Usage {
 	u := record.Usage{
 		InputTokens:      r.Usage.PromptTokens,
 		CachedTokens:     r.Usage.PromptTokensDetails.CachedTokens,

@@ -23,6 +23,9 @@ type hookRunner struct {
 	pid    string
 	sink   *seed.LiveSink
 	mu     sync.Mutex
+	// errs are hooks that failed: the run did not happen as the case
+	// describes, so it is an infra error rather than the model's result.
+	errs []string
 }
 
 func newHookRunner(c *catalog.Case, inst *env.Instance, primary env.Project, sink *seed.LiveSink) *hookRunner {
@@ -50,11 +53,20 @@ func (h *hookRunner) after(ctx context.Context, cl *record.Call) {
 			continue
 		}
 		h.counts[i]++
-		h.run(ctx, hk)
+		if err := h.run(ctx, hk); err != nil {
+			h.errs = append(h.errs, fmt.Sprintf("%s after %s: %v", hk.Action, cl.ID, err))
+		}
 	}
 }
 
-func (h *hookRunner) run(ctx context.Context, hk catalog.Hook) {
+// errors returns the hooks that failed.
+func (h *hookRunner) errors() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.errs...)
+}
+
+func (h *hookRunner) run(ctx context.Context, hk catalog.Hook) error {
 	api := h.inst.Backend.API().WithBearer(h.inst.Admin.JWT)
 	arg := func(k string) string { return fmt.Sprint(hk.Args[k]) }
 	switch hk.Action {
@@ -62,22 +74,45 @@ func (h *hookRunner) run(ctx context.Context, hk catalog.Hook) {
 		// A teammate edits the document between the agent's read and write.
 		// The PUT replaces the whole document (title required), so the
 		// title, tags and incident link are carried over from a fresh read.
-		body := map[string]any{"contentMd": arg("content")}
-		if cur, err := api.Do(ctx, http.MethodGet, "/api/post-mortems/"+arg("id"), env.ProjectQuery(h.pid), nil); err == nil && cur.OK() {
-			m := cur.Map()
-			body["title"], body["tags"], body["incidentId"] = m["title"], m["tags"], m["incidentId"]
+		path := "/api/post-mortems/" + arg("id")
+		cur, err := api.Do(ctx, http.MethodGet, path, env.ProjectQuery(h.pid), nil)
+		if err != nil {
+			return err
 		}
-		_, _ = api.Do(ctx, http.MethodPut, "/api/post-mortems/"+arg("id"), env.ProjectQuery(h.pid), body)
+		if !cur.OK() {
+			return fmt.Errorf("GET %s: HTTP %d", path, cur.Status)
+		}
+		m := cur.Map()
+		body := map[string]any{"contentMd": arg("content"), "title": m["title"], "tags": m["tags"], "incidentId": m["incidentId"]}
+		res, err := api.Do(ctx, http.MethodPut, path, env.ProjectQuery(h.pid), body)
+		if err != nil {
+			return err
+		}
+		if !res.OK() {
+			return fmt.Errorf("PUT %s: HTTP %d", path, res.Status)
+		}
 	case "stub_healthy":
 		h.inst.Stub.SetHealthy(true)
 	case "stub_unhealthy":
 		h.inst.Stub.SetHealthy(false)
 	case "sleep":
-		n, _ := strconv.Atoi(arg("seconds"))
-		time.Sleep(time.Duration(n) * time.Second)
+		n, err := strconv.Atoi(arg("seconds"))
+		if err != nil {
+			return fmt.Errorf("seconds: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(n) * time.Second):
+		}
 	case "approve_setup_draft":
-		_, _ = env.ApprovePendingDraft(ctx, h.inst.Backend, h.inst.Admin)
+		if _, err := env.ApprovePendingDraft(ctx, h.inst.Backend, h.inst.Admin); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("unknown hook action %q", hk.Action)
 	}
+	return nil
 }
 
 // startDraftApprover approves pending setup drafts while the run lasts, as

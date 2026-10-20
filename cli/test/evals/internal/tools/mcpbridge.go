@@ -35,9 +35,19 @@ func (b bearerRT) RoundTrip(r *http.Request) (*http.Response, error) {
 	return http.DefaultTransport.RoundTrip(r)
 }
 
-// ConnectMCP opens a session to url with token.
+// mcpCallTimeout bounds one MCP request. It is a per-call context, not an
+// http.Client timeout: a client timeout would also cut the session's
+// streams, and go-sdk gives up a session after a few reconnects that deliver
+// nothing.
+const mcpCallTimeout = 2 * time.Minute
+
+// ConnectMCP opens a session to url with token. The bridge only makes
+// requests and lists the tools once, so it opens no standalone SSE stream for
+// server-initiated messages.
 func ConnectMCP(ctx context.Context, url, token, defaultProject string) (*MCPBridge, error) {
-	tr := &mcp.StreamableClientTransport{Endpoint: url, HTTPClient: &http.Client{Transport: bearerRT{token}, Timeout: 2 * time.Minute}, MaxRetries: 2}
+	tr := &mcp.StreamableClientTransport{Endpoint: url, HTTPClient: &http.Client{Transport: bearerRT{token}}, MaxRetries: 2, DisableStandaloneSSE: true}
+	ctx, cancel := context.WithTimeout(ctx, mcpCallTimeout)
+	defer cancel()
 	cs, err := mcp.NewClient(&mcp.Implementation{Name: "twevals", Version: "1"}, nil).Connect(ctx, tr, nil)
 	if err != nil {
 		return nil, fmt.Errorf("connect %s: %w", url, err)
@@ -103,6 +113,8 @@ func (m *mcpTool) Call(ctx context.Context, raw json.RawMessage) Result {
 			args["project_id"] = m.b.DefaultProject
 		}
 	}
+	ctx, cancel := context.WithTimeout(ctx, mcpCallTimeout)
+	defer cancel()
 	res, err := m.b.Session.CallTool(ctx, &mcp.CallToolParams{Name: m.t.Name, Arguments: args})
 	op := ops.ParseMCP(m.t.Name, args)
 	if err != nil {
@@ -148,6 +160,8 @@ func (r *mcpResources) Spec() Spec {
 }
 
 func (r *mcpResources) Call(ctx context.Context, raw json.RawMessage) Result {
+	ctx, cancel := context.WithTimeout(ctx, mcpCallTimeout)
+	defer cancel()
 	if r.list {
 		var b strings.Builder
 		for res, err := range r.b.Session.Resources(ctx, nil) {

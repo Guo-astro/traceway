@@ -2,6 +2,7 @@ package grade
 
 import (
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/tracewayapp/traceway/cli/test/evals/internal/catalog"
@@ -49,25 +50,39 @@ func answerDebug(v *Verdict, exp *catalog.Answer, sub map[string]any) {
 	}
 }
 
+// samePath compares a cited file with the expected one, accepting a path
+// prefix, ./, backslashes, backticks and a trailing :line(:col).
 func samePath(got, want string) bool {
-	g := filepath.ToSlash(filepath.Clean(strings.TrimPrefix(strings.TrimSpace(got), "./")))
+	g := strings.Trim(strings.TrimSpace(got), "`")
+	g = strings.ReplaceAll(g, "\\", "/")
+	g = lineSuffixRe.ReplaceAllString(g, "")
+	g = filepath.ToSlash(filepath.Clean(strings.TrimPrefix(g, "./")))
 	w := filepath.ToSlash(filepath.Clean(want))
 	return g == w || strings.HasSuffix(g, "/"+w) || strings.HasSuffix(w, "/"+g) && strings.Contains(g, "/")
 }
 
-// sameSymbol accepts "(*OrderHandler).List", "OrderHandler.List" or "List"
-// for an expected "List" (and the reverse).
+var lineSuffixRe = regexp.MustCompile(`(:\d+){1,2}$`)
+
+// sameSymbol accepts "(*OrderHandler).List", "OrderHandler.List", "List",
+// "func List" or "List(ctx, id)" for an expected "List" (and the reverse).
 func sameSymbol(got, want string) bool {
 	last := func(s string) string {
-		s = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(s), "()"))
-		// Swift and Kotlin accessor frames: chatURL.getter, value.<get-x>.
+		s = strings.Trim(strings.TrimSpace(s), "`")
+		s = strings.TrimSpace(strings.TrimPrefix(s, "func "))
+		// A trailing parameter list, but not the receiver of (*T).M.
+		if strings.HasSuffix(s, ")") {
+			if i := strings.LastIndex(s, "("); i > 0 {
+				s = s[:i]
+			}
+		}
+		// Swift accessor frames: chatURL.getter.
 		for _, suf := range []string{".getter", ".setter", ".modify", ".init", ".deinit"} {
 			s = strings.TrimSuffix(s, suf)
 		}
 		if i := strings.LastIndexAny(s, ".:#"); i >= 0 {
 			s = s[i+1:]
 		}
-		return strings.ToLower(strings.Trim(s, "()*"))
+		return strings.ToLower(strings.Trim(s, "()* "))
 	}
 	return last(got) != "" && last(got) == last(want)
 }

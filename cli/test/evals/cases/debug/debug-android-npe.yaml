@@ -34,6 +34,7 @@ expect:
     max_identical_repeats: 2
   code:
     static: true
+    gating: true
     touches_culprit: true
     must_change: [app/src/main/java/com/example/pinboard/feed/FeedAdapter.kt]
     must_not_change: [app/src/main/java/com/example/pinboard/media/FullImageActivity.kt]

@@ -1,6 +1,7 @@
 package guard
 
 import (
+	"math"
 	"strings"
 	"testing"
 )
@@ -47,8 +48,11 @@ func TestDecide(t *testing.T) {
 		{name: "buildkite", env: map[string]string{"BUILDKITE": "true"}, yes: true, cost: 10, wantErr: "BUILDKITE"},
 		{name: "gitlab", env: map[string]string{"GITLAB_CI": "true"}, yes: true, cost: 10, wantErr: "GITLAB_CI"},
 		{name: "jenkins", env: map[string]string{"JENKINS_URL": "http://ci"}, yes: true, cost: 10, wantErr: "JENKINS_URL"},
-		{name: "local non-tty without yes", env: map[string]string{}, cost: 10, wantErr: "without --yes"},
-		{name: "local non-tty with yes", env: map[string]string{}, yes: true, cost: 10, want: Decision{}},
+		{name: "NaN cap", env: dispatched, yes: true, cost: math.NaN(), wantErr: "finite number"},
+		{name: "Inf cap", env: dispatched, yes: true, cost: math.Inf(1), wantErr: "finite number"},
+		{name: "negative cap", env: map[string]string{}, tty: true, cost: -1, wantErr: "--max-cost-usd is required"},
+		{name: "local non-tty without yes", env: map[string]string{}, cost: 10, wantErr: "not a terminal"},
+		{name: "local non-tty with yes", env: map[string]string{}, yes: true, cost: 10, wantErr: "not a terminal"},
 		{name: "local tty asks", env: map[string]string{}, tty: true, cost: 10, want: Decision{Confirm: true}},
 		{name: "local tty asks even with yes", env: map[string]string{}, tty: true, yes: true, cost: 10, want: Decision{Confirm: true}},
 	}
@@ -72,7 +76,8 @@ func TestDecide(t *testing.T) {
 }
 
 func TestLiveIsNeverOpenUnderGoTest(t *testing.T) {
-	err := Authorize(Request{Command: "run", MaxCostUSD: 1, Yes: true, Getenv: envOf(map[string]string{})})
+	var out strings.Builder
+	err := Authorize(Request{Command: "run", MaxCostUSD: 1, StdinTTY: true, Getenv: envOf(map[string]string{}), In: strings.NewReader("yes\n"), Out: &out})
 	if err != nil {
 		t.Fatal(err)
 	}

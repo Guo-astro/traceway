@@ -36,6 +36,7 @@ expect:
     max_identical_repeats: 2
   code:
     static: true
+    gating: true
     touches_culprit: true
     must_change: [lib/features/product/widgets/product_hero_carousel.dart]
     must_not_change: [lib/core/api_client.dart]

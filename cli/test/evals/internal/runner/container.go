@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -57,6 +58,11 @@ type ContainerShell struct {
 	host bool
 	dir  string
 	path string
+	// pgids are the host-mode process groups, killed on Close so a
+	// background process the commands started cannot outlive the shell.
+	mu     sync.Mutex
+	pgids  []int
+	closed bool
 }
 
 // workdir is where the repository is mounted for the shell.
@@ -67,9 +73,9 @@ func (c *ContainerShell) workdir() string {
 	return "/work"
 }
 
-func setupEnv(c *catalog.Case, inst *env.Instance, projects []env.Project, port int) []string {
+func setupEnv(c *catalog.Case, inst *env.Instance, projects []env.Project, port int) ([]string, error) {
 	if c.Setup == nil {
-		return nil
+		return nil, nil
 	}
 	var out []string
 	keys := make([]string, 0, len(c.Setup.Env))
@@ -86,15 +92,19 @@ func setupEnv(c *catalog.Case, inst *env.Instance, projects []env.Project, port 
 			v = strconv.Itoa(port)
 		case strings.HasPrefix(v, "@token:"):
 			name := strings.TrimPrefix(v, "@token:")
+			found := false
 			for _, p := range projects {
 				if p.Name == name {
-					v = p.Token
+					v, found = p.Token, true
 				}
+			}
+			if !found {
+				return nil, fmt.Errorf("setup.env %s names project %q, which the seed did not create", k, name)
 			}
 		}
 		out = append(out, k+"="+v)
 	}
-	return out
+	return out, nil
 }
 
 func startContainerShell(ctx context.Context, opt Options, work string, surf surface) (*ContainerShell, error) {
@@ -127,9 +137,19 @@ func startContainerShell(ctx context.Context, opt Options, work string, surf sur
 	return &ContainerShell{name: name, timeout: 10 * time.Minute, env: surf.containerEnv}, nil
 }
 
-// Close removes the container.
+// Close removes the container (on the host: kills every process group the
+// shell started). It may be called more than once.
 func (c *ContainerShell) Close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return
+	}
+	c.closed = true
 	if c.host {
+		for _, g := range c.pgids {
+			_ = syscall.Kill(-g, syscall.SIGKILL)
+		}
 		return
 	}
 	_ = exec.Command("docker", "rm", "-f", c.name).Run()
@@ -178,7 +198,15 @@ func (c *ContainerShell) Exec(ctx context.Context, cmdline string, timeout time.
 	}
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
-	err := cmd.Run()
+	err := cmd.Start()
+	if err == nil {
+		if c.host {
+			c.mu.Lock()
+			c.pgids = append(c.pgids, cmd.Process.Pid)
+			c.mu.Unlock()
+		}
+		err = cmd.Wait()
+	}
 	code := 0
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
@@ -272,6 +300,14 @@ func verifySetup(ctx context.Context, opt Options, c *catalog.Case, work string,
 	source := ""
 	for _, f := range vs.EnvFiles {
 		source += fmt.Sprintf("if [ -f %s ]; then set -a; . ./%s; set +a; fi; ", f, f)
+	}
+	// The harness's variables (URL, token, PORT) win over an env file the
+	// agent wrote: the readiness check polls PORT.
+	if source != "" {
+		for _, e := range cs.env {
+			k, v, _ := strings.Cut(e, "=")
+			source += "export " + k + "=" + shellQuoteArg(v) + "; "
+		}
 	}
 	if vs.Build != "" {
 		out, code := cs.Exec(ctx, cd+" && "+vs.Build, 10*time.Minute)

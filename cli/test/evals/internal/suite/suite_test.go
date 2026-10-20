@@ -69,7 +69,11 @@ func TestCaseReferences(t *testing.T) {
 					t.Error("perf answers need checklist_item or any_of")
 				}
 			}
-			for arm, steps := range map[string][]catalog.Step{"oracle": c.Oracle} {
+			byArm := map[string][]catalog.Step{"oracle": c.Oracle}
+			for arm, steps := range c.OracleByArm {
+				byArm["oracle_by_arm."+arm] = steps
+			}
+			for arm, steps := range byArm {
 				for i, s := range steps {
 					if s.Submit != nil {
 						item, _ := s.Submit["checklist_item"].(string)

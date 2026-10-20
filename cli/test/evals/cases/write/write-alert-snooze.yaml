@@ -28,8 +28,13 @@ expect:
       count: 1
   calls:
     required:
-      - {op: alerts.list}
       - {op: alerts.snooze, args: {id: "{{seed.ruleId}}"}}
+    # Finding the rule: the rule list, or the page it keeps opening (a page
+    # carries its rule's id and name).
+    any_of:
+      - [{op: alerts.list}]
+      - [{op: pages.list}]
+      - [{op: pages.show}]
     forbidden:
       - {op: alerts.disable}
       - {op: alerts.enable}
@@ -37,15 +42,13 @@ expect:
       - {op: pages.resolve}
       - {op: exceptions.archive}
       - {op: alerts.snooze, args: {id: "{{seed.otherRuleId}}"}}
-    order:
-      - [alerts.list, alerts.snooze]
     max_failed_calls: 3
   report:
     contains:
       - "(snooz|mute|silenc)"
       - "(\\d{1,2}:\\d{2}|60 ?min|an hour|1 hour|one hour)"
 judge:
-  expected: The agent finds the checkout error-rate rule with alerts list, snoozes it for about 60 minutes (not disable), leaves the p95 rule and the open page alone, and reports when the snooze ends and how to undo it.
+  expected: The agent finds the checkout error-rate rule (in the alert rules, or from the page it keeps opening), snoozes it for about 60 minutes (not disable), leaves the p95 rule and the open page alone, and reports when the snooze ends and how to undo it.
   rubric:
     - Snoozes (rather than disables) the error-rate rule, for about an hour.
     - Leaves the other rule and the page unchanged.

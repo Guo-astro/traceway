@@ -25,9 +25,6 @@ expect:
   calls:
     required:
       - {op: exceptions.show, args: {hash: "{{seed.hash}}"}}
-    any_of:
-      - [{op: "read_file:internal/invoices/render.go"}]
-      - [{op: "search"}]
     forbidden:
       - {op: "*", write: true}
     order:

@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -187,12 +188,14 @@ func uFind(u *uctx, args []string) int {
 		roots = []string{"."}
 	}
 	var name, pathGlob, typ string
+	fold := false
 	maxDepth := -1
 	for ; i < len(args); i++ {
 		switch args[i] {
 		case "-name", "-iname":
 			if i+1 < len(args) {
 				name = args[i+1]
+				fold = args[i] == "-iname"
 				i++
 			}
 		case "-path":
@@ -204,6 +207,10 @@ func uFind(u *uctx, args []string) int {
 			if i+1 < len(args) {
 				typ = args[i+1]
 				i++
+			}
+			if typ != "f" && typ != "d" && typ != "l" {
+				u.errf("find: unsupported -type %s (f, d or l)", typ)
+				return 1
 			}
 		case "-maxdepth":
 			if i+1 < len(args) {
@@ -240,12 +247,31 @@ func uFind(u *uctx, args []string) int {
 			if d.IsDir() && d.Name() == ".git" {
 				return filepath.SkipDir
 			}
-			shown := filepath.Join(root, rel)
-			if typ == "f" && d.IsDir() || typ == "d" && !d.IsDir() {
-				return nil
+			// As GNU find prints it: ./x under ".", the root itself as given.
+			shown := root
+			if rel != "." {
+				shown = strings.TrimSuffix(root, "/") + "/" + filepath.ToSlash(rel)
+			}
+			switch typ {
+			case "f":
+				if !d.Type().IsRegular() {
+					return nil
+				}
+			case "d":
+				if !d.IsDir() {
+					return nil
+				}
+			case "l":
+				if d.Type()&fs.ModeSymlink == 0 {
+					return nil
+				}
 			}
 			if name != "" {
-				if ok, _ := filepath.Match(name, d.Name()); !ok {
+				pat, base := name, d.Name()
+				if fold {
+					pat, base = strings.ToLower(pat), strings.ToLower(base)
+				}
+				if ok, _ := filepath.Match(pat, base); !ok {
 					return nil
 				}
 			}
@@ -296,7 +322,15 @@ func uSleep(u *uctx, args []string) int {
 	if d > 30 {
 		d = 30
 	}
-	time.Sleep(time.Duration(d * float64(time.Second)))
+	ctx := u.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-ctx.Done():
+		return 124
+	case <-time.After(time.Duration(d * float64(time.Second))):
+	}
 	return 0
 }
 
@@ -367,16 +401,25 @@ func uSed(u *uctx, args []string) int {
 			case 'q':
 				quit = true
 			case 's':
-				repl := c.repl
-				if c.global {
-					line = c.re.ReplaceAllString(line, repl)
-				} else if loc := c.re.FindStringSubmatchIndex(line); loc != nil {
-					var b []byte
-					b = c.re.ExpandString(b, repl, line, loc)
-					line = line[:loc[0]] + string(b) + line[loc[1]:]
-				} else {
+				// The Nth match (default the first), and with g every match
+				// from it on.
+				locs := c.re.FindAllStringSubmatchIndex(line, -1)
+				from := max(c.nth, 1) - 1
+				if from >= len(locs) {
 					continue
 				}
+				to := from + 1
+				if c.global {
+					to = len(locs)
+				}
+				var b []byte
+				prev := 0
+				for _, loc := range locs[from:to] {
+					b = append(b, line[prev:loc[0]]...)
+					b = c.re.ExpandString(b, c.repl, line, loc)
+					prev = loc[1]
+				}
+				line = string(append(b, line[prev:]...))
 				if c.print {
 					out = append(out, line)
 				}
@@ -410,6 +453,8 @@ type sedCmd struct {
 	repl   string
 	global bool
 	print  bool
+	// nth is the s command's numeric flag (0 = none).
+	nth int
 }
 
 func (a sedAddr) hit(n int, last bool, line string) bool {
@@ -521,14 +566,16 @@ func parseSed(script string, ere bool) ([]sedCmd, error) {
 				flags = parts[2]
 			}
 			k := 0
-			for k < len(flags) && strings.ContainsRune("gpi0123456789", rune(flags[k])) {
-				switch flags[k] {
-				case 'g':
+			for k < len(flags) && strings.ContainsRune("gpiI0123456789", rune(flags[k])) {
+				switch f := flags[k]; {
+				case f == 'g':
 					c.global = true
-				case 'p':
+				case f == 'p':
 					c.print = true
-				case 'i':
+				case f == 'i' || f == 'I':
 					c.re = regexp.MustCompile("(?i)" + c.re.String())
+				default:
+					c.nth = c.nth*10 + int(f-'0')
 				}
 				k++
 			}
@@ -541,17 +588,22 @@ func parseSed(script string, ere bool) ([]sedCmd, error) {
 }
 
 // splitUnescaped splits s on delim (not preceded by a backslash) into at most
-// n parts; the last part keeps the remainder.
+// n parts, unescaping the delimiter in all but the last; the last part keeps
+// the remainder verbatim (it holds the rest of the script).
 func splitUnescaped(s string, delim byte, n int) []string {
 	var parts []string
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
+		if len(parts) == n-1 {
+			b.WriteString(s[i:])
+			break
+		}
 		if s[i] == '\\' && i+1 < len(s) && s[i+1] == delim {
 			b.WriteByte(delim)
 			i++
 			continue
 		}
-		if s[i] == delim && len(parts) < n-1 {
+		if s[i] == delim {
 			parts = append(parts, b.String())
 			b.Reset()
 			continue
