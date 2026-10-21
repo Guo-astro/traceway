@@ -26,8 +26,9 @@ import (
 //	post_mortem     id or newly created (count), title, contains, not_contains, tags, incident_id
 //	agent_writes    count of agent write events, optionally route substring and http_status
 //	slow_endpoint   endpoint, offset_ms, reason (present | regexp)
-//	endpoint_seen   endpoint listed in the last two hours (project: by name,
-//	                default the case's primary project)
+//	endpoint_seen   endpoint listed since the setup verify step started, else
+//	                in the last two hours (project: by name, default the
+//	                case's primary project)
 //	check           id, status (up/down), extra.open_incidents
 //	page_count      status, count
 //	projects        projects (names that must exist), frameworks (name ->
@@ -222,6 +223,10 @@ func checkState(ctx context.Context, in *Input, a catalog.StateAssert) error {
 			}
 			q = map[string]string{"projectId": id}
 		}
+		from := time.Now().Add(-2 * time.Hour)
+		if !in.VerifyStart.IsZero() {
+			from = in.VerifyStart
+		}
 		deadline := time.Now().Add(20 * time.Second)
 		for {
 			var out struct {
@@ -230,7 +235,7 @@ func checkState(ctx context.Context, in *Input, a catalog.StateAssert) error {
 				} `json:"data"`
 			}
 			err := postJSON("/api/endpoints/grouped", q, map[string]any{
-				"fromDate": time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339), "toDate": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+				"fromDate": from.UTC().Format(time.RFC3339), "toDate": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
 				"orderBy": "count", "pagination": map[string]int{"page": 1, "pageSize": 100},
 			}, &out)
 			if err == nil {
@@ -465,16 +470,20 @@ func checkPostMortem(ctx context.Context, in *Input, a catalog.StateAssert, getJ
 	return nil
 }
 
+// generatedDirs hold installed packages or build output, which name SDK
+// attributes such as service.name whatever the agent wrote.
+var generatedDirs = map[string]bool{".venv": true, "venv": true, "__pycache__": true, ".next": true, "dist": true}
+
 func checkFiles(root string, a catalog.StateAssert) error {
 	var matched []string
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
-		if d.IsDir() && (d.Name() == ".git" || d.Name() == "node_modules" || d.Name() == ".skills" || strings.HasPrefix(d.Name(), ".twevals")) {
+		if d.IsDir() && (d.Name() == ".git" || d.Name() == "node_modules" || d.Name() == ".skills" || strings.HasPrefix(d.Name(), ".twevals") || generatedDirs[d.Name()]) {
 			return filepath.SkipDir
 		}
-		if d.IsDir() {
+		if d.IsDir() || strings.HasPrefix(d.Name(), ".twevals") {
 			return nil
 		}
 		rel, _ := filepath.Rel(root, p)

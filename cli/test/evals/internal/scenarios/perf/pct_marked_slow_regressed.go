@@ -40,7 +40,7 @@ func pctSeedMarkedSlowRegressed(s *seed.Scenario) error {
 				r.DB("SELECT rate_code, rate_bps, amount_cents FROM invoice_tax_lines WHERE invoice_id = $1", r.Ms(18, 27), seed.Rows(1+r.IntN(3)))
 			}
 		}
-		r.Compute("encode csv", time.Duration(float64(lines)*0.28*(0.95+0.1*r.Float())*float64(time.Millisecond)))
+		r.Compute("encode csv", time.Duration(float64(lines)*0.28*(0.95+0.1*r.Float())*float64(time.Millisecond))).Scope = "invoicing-api"
 		r.Gap(r.Ms(0.3, 0.9))
 	})
 
@@ -49,16 +49,16 @@ func pctSeedMarkedSlowRegressed(s *seed.Scenario) error {
 	list.Handler(func(r *seed.Req) {
 		r.Gap(r.Ms(0.4, 1.0))
 		r.DB("SELECT id, number, issued_at, customer_name, total_cents, status FROM invoices WHERE org_id = $1 ORDER BY issued_at DESC LIMIT 50", r.LogNormal(5*time.Millisecond, 20*time.Millisecond), seed.Rows(50))
-		r.Compute("encode response", r.Ms(0.5, 1.8))
+		r.Gap(r.Ms(0.5, 1.8))
 	})
-	get := api.Endpoint("GET", "/api/invoices/:id")
+	get := api.Endpoint("GET", "/api/invoices/{id}")
 	get.Traffic(seed.Daily(320), seed.Diurnal(), seed.Over(window))
 	get.Handler(func(r *seed.Req) {
 		r.Gap(r.Ms(0.4, 1.0))
 		r.DB("SELECT id, number, issued_at, customer_name, total_cents, status FROM invoices WHERE id = $1", r.LogNormal(2*time.Millisecond, 8*time.Millisecond))
 		r.DB("SELECT sku, description, qty, unit_price_cents FROM invoice_lines WHERE invoice_id = $1", r.LogNormal(2*time.Millisecond, 9*time.Millisecond))
 		r.DB("SELECT rate_code, rate_bps, amount_cents FROM invoice_tax_lines WHERE invoice_id = $1", r.LogNormal(2*time.Millisecond, 8*time.Millisecond))
-		r.Compute("encode response", r.Ms(0.3, 1.0))
+		r.Gap(r.Ms(0.3, 1.0))
 	})
 	create := api.Endpoint("POST", "/api/invoices")
 	create.Traffic(seed.Daily(90), seed.Diurnal(), seed.Over(window))
@@ -67,6 +67,7 @@ func pctSeedMarkedSlowRegressed(s *seed.Scenario) error {
 		r.DB("INSERT INTO invoices (org_id, number, issued_at, customer_name, total_cents, status) VALUES ($1, $2, $3, $4, $5, 'open') RETURNING id", r.LogNormal(4*time.Millisecond, 14*time.Millisecond))
 		r.DB("INSERT INTO invoice_lines (invoice_id, sku, description, qty, unit_price_cents) SELECT $1, * FROM unnest($2::text[], $3::text[], $4::int[], $5::bigint[])", r.LogNormal(4*time.Millisecond, 15*time.Millisecond))
 		r.DB("INSERT INTO invoice_tax_lines (invoice_id, rate_code, rate_bps, amount_cents) SELECT $1, * FROM unnest($2::text[], $3::int[], $4::bigint[])", r.LogNormal(3*time.Millisecond, 12*time.Millisecond))
+		r.Status(201)
 	})
 	s.Background(api, seed.TypicalTraffic(6))
 	api.Host().CPU(seed.Flat(0.22, 0.34))
