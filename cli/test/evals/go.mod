@@ -2,7 +2,7 @@ module github.com/tracewayapp/traceway/cli/test/evals
 
 go 1.26.2
 
-toolchain go1.26.9
+toolchain go1.26.10
 
 require (
 	github.com/benhoyt/goawk v1.32.0

@@ -2,7 +2,7 @@ module examples/devtesting-embedded
 
 go 1.26.2
 
-toolchain go1.26.9
+toolchain go1.26.10
 
 require (
 	github.com/gin-gonic/gin v1.12.0
