@@ -63,6 +63,23 @@ agents:
       output_tokens: [5000, 15000]
     fallback_price: {prompt: 0.10, completion: 0.50, cache_read: 0.01, cache_write: 0.125}
 
+  deepseek-flash:
+    # The dated snapshot, because DeepSeek itself serves only this id; the
+    # undated one is third-party only, several hosts at fp4.
+    id: deepseek/deepseek-v4.1-flash-1017
+    label: DeepSeek V4.1 Flash
+    provider:
+      order: [deepseek]
+      allow_fallbacks: true
+    caching: automatic
+    reasoning_effort: medium
+    max_tokens_per_turn: 16000
+    estimate:
+      input_tokens: [100000, 400000]
+      cached_fraction: 0.7
+      output_tokens: [5000, 15000]
+    fallback_price: {prompt: 0.15, completion: 0.60, cache_read: 0.003, cache_write: 0.15}
+
 judge:
   id: anthropic/claude-haiku-5.5
   label: Claude Haiku 5.5 (judge)
