@@ -71,14 +71,17 @@ When you report, state the p95 and the allowance together: "p95 is 2.1s but this
 
 Narrowing the window is how you turn "it is slow" into "it got slow at 14:10, right after deploy X". Do not investigate the default window blindly: adjust it down until it brackets the onset, then correlate that moment with deploys and metrics.
 
-**1. Latency over time: `endpoints chart`.** This is the direct curve. It buckets latency over the window and returns the top 5 endpoints ranked by the chosen metric (plus an "Other" bucket), each as a `{timestamp, endpoint, value}` series in milliseconds. Read down one endpoint's buckets for the step where its value jumps: that bucket dates the onset. Use `--metric-type p95` (or `p99`/`p50`/`total_time`) and a coarse `--interval-minutes` over a wide window first, then re-run the suspect span with a finer interval to sharpen.
+**1. Latency over time: `endpoints chart`.** This is the direct curve. It buckets latency over the window and returns the top 5 endpoints ranked by the chosen metric (plus an "Other" bucket), each as a `{timestamp, endpoint, value}` series in milliseconds. Each `timestamp` is the **start** of its bucket. Read down one endpoint's buckets for the first one whose value has jumped: the onset lies inside that bucket, between its timestamp and its timestamp plus the interval, not in the bucket before it. Use `--metric-type p95` (or `p99`/`p50`/`total_time`) and a coarse `--interval-minutes` over a wide window first to find that bucket. A coarse bucket only brackets the onset: with 60-minute buckets its timestamp can be 59 minutes early, with 6-hour buckets almost 6 hours. Before you report an onset time, re-run over just that bucket with an interval of 15 minutes or less, and report the start of the first elevated fine bucket.
 ```bash
 traceway endpoints chart --metric-type p95 --since 7d --interval-minutes 60 --output json \
+  | jq '.series[] | select(.endpoint == "GET /api/checkout") | {t: .timestamp, p95_ms: .value}'
+# the 60-minute bucket starting 14:00 stepped up: sharpen it in 5-minute buckets
+traceway endpoints chart --metric-type p95 --from 2026-06-25T14:00:00Z --to 2026-06-25T15:00:00Z --interval-minutes 5 --output json \
   | jq '.series[] | select(.endpoint == "GET /api/checkout") | {t: .timestamp, p95_ms: .value}'
 ```
 Caveat: it always returns the *top 5* endpoints by that metric. If your suspect route is not in the top 5 it is folded into "Other"; fall back to method 3 for it.
 
-**2. Infra and runtime over time: `metrics query --interval-minutes`.** For the *cause* behind a latency step (saturation, GC, throughput), bucket any metric the same way. The JSON is `{results: [{name, unit, series}]}`, one result per query, and `series` maps each group to its list of `{timestamp, value}` points (a single `__all__` group when ungrouped); read down the points for the bucket where the value steps up.
+**2. Infra and runtime over time: `metrics query --interval-minutes`.** For the *cause* behind a latency step (saturation, GC, throughput), bucket any metric the same way. The JSON is `{results: [{name, unit, series}]}`, one result per query, and `series` maps each group to its list of `{timestamp, value}` points (a single `__all__` group when ungrouped); read down the points for the first bucket where the value has stepped up. Timestamps are bucket starts here too, so sharpen that bucket the same way before you report a time.
 ```bash
 traceway metrics query --name system.cpu.utilization --tag state=idle --aggregation min --since 7d --interval-minutes 60 --output json \
   | jq '.results[0].series | to_entries[] | .value[] | {t: .timestamp, busy: (1 - .value)}'
@@ -93,7 +96,7 @@ traceway endpoints list --search "GET /api/checkout" --from 2026-06-25T00:00:00Z
 traceway endpoints list --search "GET /api/checkout" --from 2026-06-25T12:00:00Z --to 2026-06-26T00:00:00Z \
   --output json | jq '.data[0] | {p95_ms: (.p95Duration / 1e6), p99_ms: (.p99Duration / 1e6), count}'
 ```
-A few bisection steps localize the jump to an hour or less. Watch `count` alongside p95: if the slow half also carries far more traffic, suspect load, not a code change.
+Keep bisecting until the elevated window is 15 minutes or less, then report its start. Watch `count` alongside p95: if the slow half also carries far more traffic, suspect load, not a code change.
 
 **4. Cross-check and correlate.** Once the methods agree on an onset time:
 - A latency jump that coincides with a metric inflection (CPU or GC stepping up at the same bucket) points at saturation.

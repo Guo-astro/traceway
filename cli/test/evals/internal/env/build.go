@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 // Binaries are the executables a run needs.
@@ -46,6 +47,14 @@ func BuildBinaries(repoRoot, cacheDir string) (*Binaries, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
+	// buildMu only covers this process, and go test ./... runs one process
+	// per package: without this lock each package that boots a backend
+	// compiles it at the same time, several GB of compiler memory at once.
+	unlock, err := lockFile(filepath.Join(cacheDir, "bin", ".build.lock"))
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	steps := []struct {
 		out, dir string
 		args     []string
@@ -58,8 +67,8 @@ func BuildBinaries(repoRoot, cacheDir string) (*Binaries, error) {
 		if _, err := os.Stat(s.out); err == nil {
 			continue
 		}
-		// Build to a private path and rename, so concurrent harness
-		// processes never see (or execute) a half-written binary.
+		// Build to a private path and rename, so a build killed halfway
+		// never leaves a binary the Stat above would accept.
 		tmp := fmt.Sprintf("%s.tmp-%d", s.out, os.Getpid())
 		args := append([]string{}, s.args...)
 		for i := range args {
@@ -79,6 +88,21 @@ func BuildBinaries(repoRoot, cacheDir string) (*Binaries, error) {
 	}
 	buildCache[hash] = b
 	return b, nil
+}
+
+// lockFile takes an exclusive flock on path, waiting for any other holder.
+// The kernel drops the lock when its holder exits, so a killed build never
+// leaves it stuck.
+func lockFile(path string) (func(), error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("lock %s: %w", path, err)
+	}
+	return func() { f.Close() }, nil
 }
 
 // TreeHash fingerprints the backend and CLI sources: the committed trees,

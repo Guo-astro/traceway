@@ -230,7 +230,7 @@ func (s *Scenario) emit(r *Request, batches map[*Project]*spanBatch, logs map[*S
 		}
 	}
 	walk(r.Root, nil, rootSvc, r.Host, r.Start, r.Detail)
-	if r.Detail && !r.e.Task && !r.e.SkipAccessLog {
+	if r.Detail && !r.listed && !r.e.Task && !r.e.SkipAccessLog {
 		// The access log line a request logger writes on completion,
 		// correlated with the trace like any OTel log bridge does.
 		end := r.Start.Add(r.Root.Dur)

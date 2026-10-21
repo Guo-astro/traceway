@@ -44,6 +44,8 @@ type Scenario struct {
 	// SpanBudget caps the spans sent with full detail (default 20000).
 	SpanBudget int
 	afterFlush []func() error
+	// rows maps each endpoint row's id to the request that holds its span.
+	rows map[string]*Request
 }
 
 // Stats summarizes what a seed sent.
@@ -380,6 +382,7 @@ type Request struct {
 	Status    int
 	Detail    bool
 	forced    bool
+	listed    bool // detail only because a listing shows it (listedRequests): no access log line
 	Progress  float64
 	ParentRef *Span // for downstream SERVER spans: the CLIENT span calling it
 }

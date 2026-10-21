@@ -69,7 +69,7 @@ func (s *server) addTools(srv *mcp.Server) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:         "endpoints_chart",
 		OutputSchema: outSchema[client.EndpointChartResponse](),
-		Description:  "Endpoint latency bucketed over time: the top 5 endpoints ranked by metric_type (plus an Other bucket), each as a {timestamp, endpoint, value} series in milliseconds. Use it to pinpoint WHEN latency changed: read down one endpoint's buckets for the step. A non-top-5 endpoint folds into Other; bisect list_endpoints over narrowing from/to windows for it instead.",
+		Description:  "Endpoint latency bucketed over time: the top 5 endpoints ranked by metric_type (plus an Other bucket), each as a {timestamp, endpoint, value} series in milliseconds. Use it to pinpoint WHEN latency changed: read down one endpoint's buckets for the first one that jumped. Each timestamp is the start of its bucket, so the change happened inside that bucket; re-run it with from/to and an interval_minutes of 15 or less before reporting the time. A non-top-5 endpoint folds into Other; bisect list_endpoints over narrowing from/to windows for it instead.",
 		Annotations:  readOnly(),
 	}, s.endpointsChart)
 

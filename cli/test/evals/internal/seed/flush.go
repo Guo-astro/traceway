@@ -40,6 +40,7 @@ func (s *Scenario) Flush() error {
 			all = append(all, e.Requests()...)
 		}
 	}
+	listed := s.listedRequests(all)
 	keys := make([]string, 0, len(s.lazy))
 	for k := range s.lazy {
 		keys = append(keys, k)
@@ -49,6 +50,11 @@ func (s *Scenario) Flush() error {
 		s.exposed[k] = s.lazy[k]()
 	}
 	s.enforceBudget(all)
+	for _, r := range listed {
+		if !r.Detail {
+			r.Detail, r.listed = true, true
+		}
+	}
 	sort.SliceStable(all, func(i, j int) bool { return all[i].Start.Before(all[j].Start) })
 
 	batches := map[*Project]*spanBatch{}
@@ -179,6 +185,124 @@ func serverSpans(sp *Span) int {
 		n += serverSpans(c)
 	}
 	return n
+}
+
+// How many requests from the top of a request listing get their full span
+// tree. Every trailing window keeps its listedSlowest slowest (the default
+// order) and its listedOthers fastest and newest; every UTC day, for
+// --from/--to bisection, its listedPerDay slowest. Verify checks half of the
+// trailing ones, which leaves room for the requests that age out of a window
+// between the seed and the agent's query.
+const (
+	listedSlowest = 10
+	listedOthers  = 4
+	listedPerDay  = 3
+)
+
+var listingWindows = []time.Duration{time.Hour, 6 * time.Hour, 24 * time.Hour, 3 * 24 * time.Hour, 7 * 24 * time.Hour, 30 * 24 * time.Hour}
+
+// listingDrift is where a listing's window may end relative to s.Now: before
+// it in a scenario that plays out in real time (its telemetry runs ahead of
+// the clock), after it by up to a run's length. The hour is taken at each
+// end, since a few minutes move the top of a busy hour; longer windows barely
+// move.
+var listingDrift = []time.Duration{-10 * time.Minute, -5 * time.Minute, 0, 5 * time.Minute, 10 * time.Minute, 20 * time.Minute}
+
+type listedRow struct {
+	r     *Request
+	start time.Time
+	dur   time.Duration
+}
+
+// listedRequests returns the requests a request listing (endpoints requests,
+// list_endpoint_requests) shows first, which Flush sends with their full span
+// tree. The random detail sample almost never holds the slowest requests, so
+// an agent that opened one used to find no spans at all. Flush adds them after
+// enforceBudget, without an access log line, and this reads no random
+// numbers, so the sample and everything else generated stay the same.
+func (s *Scenario) listedRequests(all []*Request) []*Request {
+	type key struct {
+		p    *Project
+		name string
+	}
+	groups := map[key][]listedRow{}
+	// Only endpoints with traffic of their own: one reached only through
+	// Call is seen in its caller's waterfall, and covering its listing would
+	// send most of the callers' trees.
+	listable := map[key]bool{}
+	for _, svc := range s.services {
+		for _, e := range svc.endpoints {
+			if len(e.shapes) > 0 {
+				listable[key{svc.p, e.Name()}] = true
+			}
+		}
+	}
+	s.rows = map[string]*Request{}
+	for _, r := range all {
+		var walk func(sp *Span, svc *Service, abs time.Time)
+		walk = func(sp *Span, svc *Service, abs time.Time) {
+			if sp.Service != nil {
+				svc = sp.Service
+			}
+			start := abs.Add(sp.Start)
+			if sp.Kind == KindServer {
+				k := key{svc.p, sp.Name}
+				groups[k] = append(groups[k], listedRow{r, start, sp.Dur})
+				s.rows[EntityID(svc.p.ID, r.TraceID, sp.SpanID)] = r
+			}
+			for _, c := range sp.Children {
+				walk(c, svc, start)
+			}
+		}
+		walk(r.Root, r.e.svc, r.Start)
+	}
+	slowest := func(a, b listedRow) bool { return a.dur > b.dur }
+	fastest := func(a, b listedRow) bool { return a.dur < b.dur }
+	newest := func(a, b listedRow) bool { return a.start.After(b.start) }
+	picked := map[*Request]bool{}
+	var listed []*Request
+	keep := func(rows []listedRow, from, to time.Time, n int, less func(a, b listedRow) bool) {
+		var in []listedRow
+		for _, x := range rows {
+			if !x.start.Before(from) && x.start.Before(to) {
+				in = append(in, x)
+			}
+		}
+		sort.SliceStable(in, func(i, j int) bool { return less(in[i], in[j]) })
+		for _, x := range in[:min(n, len(in))] {
+			if !picked[x.r] {
+				picked[x.r] = true
+				listed = append(listed, x.r)
+			}
+		}
+	}
+	for k, rows := range groups {
+		if !listable[k] {
+			continue
+		}
+		for _, d := range listingWindows {
+			ends := []time.Duration{0}
+			if d == time.Hour {
+				ends = listingDrift
+			}
+			for _, off := range ends {
+				to := s.Now.Add(off)
+				keep(rows, to.Add(-d), to, listedSlowest, slowest)
+				keep(rows, to.Add(-d), to, listedOthers, fastest)
+				keep(rows, to.Add(-d), to, listedOthers, newest)
+			}
+		}
+		earliest := rows[0].start
+		for _, x := range rows {
+			if x.start.Before(earliest) {
+				earliest = x.start
+			}
+		}
+		for day := earliest.UTC().Truncate(24 * time.Hour); day.Before(s.Now); day = day.Add(24 * time.Hour) {
+			keep(rows, day, day.Add(24*time.Hour), listedPerDay, slowest)
+		}
+	}
+	return listed
 }
 
 // enforceBudget keeps the detailed span volume under SpanBudget by dropping

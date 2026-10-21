@@ -64,6 +64,70 @@ func (s *Scenario) Verify(timeout time.Duration) error {
 			}
 			time.Sleep(250 * time.Millisecond)
 		}
+		if err := s.verifyListings(w.p); err != nil {
+			return fmt.Errorf("verify %s: %w", w.p.Name, err)
+		}
+	}
+	return nil
+}
+
+// verifyListings checks the first page of every endpoint's request listing,
+// in the windows and orders agents ask for: each request on it must have been
+// sent with its span tree (see listedRequests).
+func (s *Scenario) verifyListings(p *Project) error {
+	now := time.Now()
+	orders := []struct {
+		by, dir string
+		n       int
+	}{{"duration", "desc", listedSlowest / 2}, {"duration", "asc", listedOthers / 2}, {"recorded_at", "desc", listedOthers / 2}}
+	for _, svc := range s.services {
+		if svc.p != p {
+			continue
+		}
+		for _, e := range svc.endpoints {
+			if len(e.shapes) == 0 {
+				continue
+			}
+			q := env.ProjectQuery(p.ID)
+			q.Set("endpoint", e.Name())
+			for _, win := range []time.Duration{time.Hour, 24 * time.Hour, 7 * 24 * time.Hour} {
+				for _, o := range orders {
+					res, err := s.Sink.Admin(http.MethodPost, "/api/endpoints/endpoint", q, map[string]any{
+						"fromDate": now.Add(-win).Format(time.RFC3339), "toDate": now.Format(time.RFC3339),
+						"orderBy": o.by, "sortDirection": o.dir, "pagination": map[string]int{"page": 1, "pageSize": o.n},
+					})
+					if err != nil {
+						return err
+					}
+					if err := res.Err("list requests"); err != nil {
+						return err
+					}
+					var out struct {
+						Data []struct {
+							ID string `json:"id"`
+						} `json:"data"`
+					}
+					if err := json.Unmarshal(res.Body, &out); err != nil {
+						return err
+					}
+					known := 0
+					for _, d := range out.Data {
+						r, ok := s.rows[d.ID]
+						if !ok {
+							continue
+						}
+						known++
+						if !r.Detail {
+							return fmt.Errorf("%s requests over the last %s by %s %s list %s, which was sent without its span tree", e.Name(), win, o.by, o.dir, d.ID)
+						}
+					}
+					// Ids that never match would make this check pass on anything.
+					if len(out.Data) > 0 && known == 0 {
+						return fmt.Errorf("%s requests over the last %s: none of the %d listed ids is a seeded request", e.Name(), win, len(out.Data))
+					}
+				}
+			}
+		}
 	}
 	return nil
 }

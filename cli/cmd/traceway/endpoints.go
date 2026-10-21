@@ -185,7 +185,9 @@ func newEndpointsChartCmd() *cobra.Command {
 		Long: `Show endpoint latency as a time series, the curve behind /endpoints in the
 dashboard. The server returns the top 5 endpoints ranked by --metric-type plus
 an "Other" bucket, each bucketed by --interval-minutes, so you can read down the
-buckets to find when a latency jump started.
+buckets to find when a latency jump started. Each timestamp is the start of its
+bucket: the jump happened inside the first bucket that shows it. Re-run that
+bucket with --from/--to and a finer --interval-minutes to date it closely.
 
 This always returns the top endpoints by the chosen metric; it does not filter
 to one route. To track a specific endpoint that is not in the top 5, bisect
