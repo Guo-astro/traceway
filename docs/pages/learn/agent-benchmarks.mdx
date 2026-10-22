@@ -163,7 +163,7 @@ Each case runs on several setups, so the skill and the two surfaces can be compa
 | `cli-write+skill`, `mcp-write` | The write edition of the CLI with the `traceway-write` skill, or the `/mcp/write` server |
 | `cli+setup-skill` | The setup skill and a container shell with the app's toolchain |
 
-**Skill uplift** is the `cli+skill` pass rate minus `cli-noskill`, on the same cases. **CLI vs MCP** is `cli+skill` minus `mcp`.
+**Skill uplift** is the `cli+skill` pass rate minus `cli-noskill`, on the same cases, computed per suite (perf and debug both have the control arm). **CLI vs MCP** is `cli+skill` minus `mcp`, and `cli-write+skill` minus `mcp-write` for the write arms.
 
 ## Graders
 
@@ -208,8 +208,7 @@ Evals cost real money, so nothing runs them automatically:
 
 | Missing | Size | Why |
 |---|---|---|
-| The debug suite | 14 cases, 41 runs per model | Needs Docker to run the hidden tests against the model's fix with no network |
-| The setup suite | 6 cases, 6 runs per model | Needs Docker containers with the app's toolchain (Go, Node, Python) |
+| The setup suite | 6 cases, 6 runs per model | Needs a Linux Docker host. The setup container runs on the host network and reaches the run's backend at `127.0.0.1`, which a Docker VM on macOS (Colima, Docker Desktop) does not share with the host. The debug suite's hidden tests only need a container with no network, so they run on macOS too |
 | GPT-6 Astra | every suite | It is configured in `models.yaml` but has never run |
 | Repeats | every case | Each case ran once per setup, so there is no variance estimate yet |
 | Workflow baselines | every suite | The published runs were made locally, not by the CLI Evals workflow |
@@ -239,6 +238,6 @@ From `cli/` in a checkout of the repository:
 | `just eval-dispatch -f preset=smoke -f max_cost_usd=30` | paid | Starts the CLI Evals workflow, which still waits for approval |
 | `just eval-local --preset full --suites perf --models haiku --max-cost-usd 5` | paid | A local run. Needs `OPENROUTER_API_KEY` and `yes` typed on a terminal |
 
-The debug and setup suites need Docker: it runs the hidden tests of a model's fix with no network, and it hosts the setup suite's toolchains. Each run writes a `summary.md` (pass rates, skill uplift, CLI vs MCP, model vs model, efficiency, cost) and keeps every transcript. `twevals report <dir>... --out DIR` merges runs into one comparison.
+The debug and setup suites need Docker: it runs the hidden tests of a model's fix with no network, and it hosts the setup suite's toolchains. The debug suite works with Colima or Docker Desktop on macOS; the setup suite needs a Linux host (see above). Pass `--out` as an absolute path, since each run's backend resolves its SQLite path from its own working directory. Each run writes a `summary.md` (pass rates, skill uplift, CLI vs MCP, model vs model, efficiency, cost) and keeps every transcript. `twevals report <dir>... --out DIR` merges runs into one comparison.
 
 See the harness [README](https://github.com/tracewayapp/traceway/tree/main/cli/test/evals) for the case format, the seed DSL and how to add a case.

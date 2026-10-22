@@ -459,6 +459,7 @@ function Legend() {
     { kind: "pass", label: KIND_LABEL.pass },
     { kind: "trajectory", label: KIND_LABEL.trajectory },
     { kind: "wrong", label: KIND_LABEL.wrong },
+    { kind: "budget", label: KIND_LABEL.budget },
   ];
   return (
     <div className="mt-6 flex flex-wrap items-center gap-x-6 gap-y-2 text-[0.8125rem] text-fg-2">

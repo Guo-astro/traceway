@@ -33,6 +33,8 @@ const MODEL_SHORT = { haiku: "Haiku", "deepseek-flash": "DeepSeek", opus: "Opus"
 const MODEL_VENDOR = { haiku: "Anthropic", "deepseek-flash": "DeepSeek", opus: "Anthropic" };
 const MODEL_WEIGHTS = { haiku: "proprietary", "deepseek-flash": "open", opus: "proprietary" };
 
+// Every suite the harness has, in display order. Only the suites with runs in
+// the source directory are rendered.
 const SUITES = [
   {
     id: "perf",
@@ -40,10 +42,21 @@ const SUITES = [
     description: "Diagnose a latency problem from production telemetry.",
   },
   {
+    id: "debug",
+    label: "Debug",
+    description:
+      "Find the root cause of an issue and fix the code. Hidden tests check the fix.",
+  },
+  {
     id: "write",
     label: "Write",
     description:
       "Act on the system safely: pages, alerts, monitors, archiving and post-mortems.",
+  },
+  {
+    id: "setup",
+    label: "Setup",
+    description: "Instrument an app with the setup skill until its telemetry arrives.",
   },
 ];
 
@@ -68,56 +81,128 @@ const SETUPS = {
     label: "Write MCP server",
     description: "The write MCP server.",
   },
+  "cli+setup-skill": {
+    label: "CLI + setup skill",
+    description: "The setup skill and a container shell with the app's toolchain.",
+  },
 };
 
+// The setup pairs the harness compares (internal/report/aggregate.go), kept
+// here so the page's deltas match summary.md row for row.
+const SKILL_PAIR = ["cli+skill", "cli-noskill"];
+const CLI_MCP_PAIRS = [
+  ["cli+skill", "mcp"],
+  ["cli-write+skill", "mcp-write"],
+];
+
+// A group is matched by its case id prefix, or by an explicit case list where
+// the ids do not share one (the debug suite). `code` is what the page prints
+// next to the label.
 const GROUPS = [
   {
     id: "perf-app",
+    code: "perf-app-*",
     label: "App code",
     description:
       "Slow code in the request path: serialization, quadratic loops, large allocations, debug logging, work that belongs in the background.",
   },
   {
     id: "perf-cache",
+    code: "perf-cache-*",
     label: "Caching",
     description: "Cold starts after a release, a missing cache, a cache stampede.",
   },
   {
     id: "perf-ctl",
+    code: "perf-ctl-*",
     label: "Controls and traps",
     description:
       "A healthy endpoint, endpoints marked slow on purpose, a misleading metric, a pasted alert and an onset to pin down. Some have nothing to fix.",
   },
   {
     id: "perf-db",
+    code: "perf-db-*",
     label: "Database",
     description:
       "N+1 queries, a missing index, pool exhaustion, lock contention, over-fetching, unbounded results.",
   },
   {
     id: "perf-infra",
+    code: "perf-infra-*",
     label: "Infrastructure",
     description: "CPU saturation, disk I/O, memory pressure, a noisy neighbor.",
   },
   {
     id: "perf-net",
+    code: "perf-net-*",
     label: "Network and upstreams",
     description:
       "Retries, chatty fan-out, sequential calls, large payloads, connection reuse, a slow third party.",
   },
   {
     id: "perf-xs",
+    code: "perf-xs-*",
     label: "Cross-stack and mobile",
     description:
       "A browser or mobile app fails, and the agent has to follow it into the backend.",
   },
   {
+    id: "debug-backend",
+    code: "debug, Go / Python / Node",
+    label: "Backend fixes",
+    description:
+      "A panic, a lowered timeout, a race, a renamed field, a config error at startup, two bugs under one issue hash. The patch has to pass hidden tests.",
+    cases: [
+      "debug-go-nil-regression",
+      "debug-go-task-panic",
+      "debug-dashboard-url",
+      "debug-timeout-downstream",
+      "debug-mixed-group",
+      "debug-py-keyerror-webhook",
+      "debug-log-only-error",
+      "debug-race-duplicate",
+      "debug-js-contract-rename",
+    ],
+  },
+  {
+    id: "debug-mobile",
+    code: "debug, Android / iOS / Flutter",
+    label: "Mobile crashes",
+    description:
+      "A Kotlin, Swift or Dart crash: find the culprit from the stack trace and patch it. The patch is checked statically.",
+    cases: ["debug-android-npe", "debug-ios-force-unwrap", "debug-flutter-null-check"],
+  },
+  {
+    id: "debug-ctl",
+    code: "debug controls",
+    label: "Debug controls and policy",
+    description:
+      "A rare 500 the telemetry cannot explain, and a cleanup request made with a write credential.",
+    cases: ["debug-insufficient-evidence", "debug-no-writes"],
+  },
+  {
     id: "write",
+    code: "write-*",
     label: "Write actions",
     description:
       "Acknowledge or resolve pages, snooze or disable alerts, run a monitor, archive issues, write post-mortems, refuse what a token may not do.",
   },
+  {
+    id: "setup",
+    code: "setup-*",
+    label: "Setup",
+    description:
+      "Instrument a Go, Express, FastAPI, Next.js or React app, or a Go + React monorepo, until its telemetry arrives.",
+  },
 ];
+
+const groupOf = (caseId) => {
+  const g = GROUPS.find((x) =>
+    x.cases ? x.cases.includes(caseId) : caseId === x.id || caseId.startsWith(`${x.id}-`),
+  );
+  if (!g) throw new Error(`no group for case ${caseId}`);
+  return g.id;
+};
 
 // Case titles that would give away the expected diagnosis are replaced by a
 // summary of the case prompt, which only states the symptom.
@@ -137,6 +222,23 @@ const DESCRIPTION_OVERRIDES = {
   "perf-xs-ios-watchdog":
     "iOS users see the app freeze on the splash screen and close",
   "write-archive-ambiguous": "Archive last week's checkout errors",
+  "debug-android-npe": "The Android app crashes while users scroll the home feed",
+  "debug-flutter-null-check":
+    "Some product pages in the Flutter app show a grey screen instead of the product",
+  "debug-go-task-panic":
+    "A pasted new-error email about a runtime.boundsError in the fulfillment service that has not stopped",
+  "debug-insufficient-evidence": "A few report exports fail with a 500 every day",
+  "debug-ios-force-unwrap":
+    "The iOS app closes when customers open support from the Help screen",
+  "debug-js-contract-rename": "The shop's order history page has been blank for a few hours",
+  "debug-log-only-error":
+    "catalog-api answers 500s and the recommendations row on product pages is empty",
+  "debug-mixed-group": "An issue on the shipments API went quiet for days and is back",
+  "debug-no-writes": "The billing service has a pile of errors: look into it and clean up",
+  "debug-py-keyerror-webhook":
+    "Failed invoice.paid webhook deliveries for a day, and some payments missing from the records",
+  "debug-timeout-downstream":
+    "Many customers cannot get a cart total since yesterday, and a retry usually works",
 };
 
 // The shared problems named in the comparison's write-up. Each matcher picks
@@ -183,6 +285,34 @@ const KNOWN_ISSUES = [
       "Every model fails this case's grounding check on most setups, mostly because the output it cites was truncated.",
     matches: (r) => r.graders.includes("grounding"),
   },
+  {
+    id: "debug-issue-hash-optional",
+    kind: "harness",
+    case: "debug-*",
+    title: "The debug answer schema calls the issue hash optional, the grader does not",
+    detail:
+      "The submit tool describes issue_hash as the group hash \"if the bug has one\" and does not require it, so a model may leave it out even when it has quoted the hash in its evidence. The answer grader fails the run on that empty field alone, whatever the diagnosis and the fix.",
+    matches: (r) => r.firstFailure.includes('issue_hash ""'),
+  },
+  {
+    id: "debug-exceptions-show-truncated",
+    kind: "skill",
+    case: "debug-*",
+    title: "The first command the skill recommends is too long to cite",
+    detail:
+      "The skill opens a debug task with traceway exceptions show <hash>, and for these groups its output (JSON or not, with or without head) runs past the 30,000 characters the sandbox shell returns. The grounding grader rejects any evidence that cites a truncated call, so a run that read the right stack trace there and fixed the bug still fails.",
+    matches: (r) =>
+      r.graders.includes("grounding") && r.firstFailure.includes("whose output was truncated"),
+  },
+  {
+    id: "debug-culprit-line-after-patch",
+    kind: "harness",
+    case: "debug-*",
+    title: "Culprit lines are graded against the file before the patch",
+    detail:
+      "The submit schema asks for the culprit's line number without saying which version of the file. A model that inserts a guard or a comment above the faulty statement and then reports where that statement now sits lands outside the grader's tolerance of a few lines, even when the hidden tests pass on its fix.",
+    matches: (r) => /\bculprit\.line [1-9]\d*, want \d+±\d+$/.test(r.firstFailure),
+  },
 ];
 
 const KIND_BY_FAILURE = {
@@ -201,10 +331,31 @@ function parseArgs(argv) {
     const value = argv[i + 1];
     if (value === undefined || value.startsWith("--"))
       throw new Error(`${a} needs a value`);
-    args[a.slice(2)] = value;
+    if (a === "--part") (args.part ??= []).push(value);
+    else args[a.slice(2)] = value;
     i++;
   }
   return args;
+}
+
+// A part is one batch of runs: `--part perf,write:3b00b083:2026-10-21`. A
+// merged results.json keeps only its first part's commit and date, so the
+// batches are named on the command line and written into the page.
+function parseParts(values, suites, header) {
+  if (!values) return [{ suites: suites.map((s) => s.id), commit: header.gitSha.slice(0, 8), date: header.started.slice(0, 10) }];
+  const parts = values.map((v) => {
+    const m = v.match(/^([\w,-]+):([0-9a-f]{7,40}):(\d{4}-\d{2}-\d{2})$/);
+    if (!m) throw new Error(`--part ${v}: want <suites>:<commit>:<YYYY-MM-DD>`);
+    return { suites: m[1].split(","), commit: m[2].slice(0, 8), date: m[3] };
+  });
+  for (const s of suites) {
+    const owners = parts.filter((p) => p.suites.includes(s.id));
+    if (owners.length !== 1) throw new Error(`suite ${s.id} must be in exactly one --part, found ${owners.length}`);
+  }
+  for (const p of parts)
+    for (const id of p.suites)
+      if (!suites.some((s) => s.id === id)) throw new Error(`--part names suite ${id}, which has no runs`);
+  return parts;
 }
 
 function parseCsv(text) {
@@ -282,6 +433,15 @@ function readCase(file) {
   return { id: field("id"), suite: field("suite"), title: field("title") };
 }
 
+// A hidden-test failure carries the test runner's output, several KB over
+// many lines. The page shows the first reason in a cell and a tooltip, so
+// keep one line and the start of it.
+const FIRST_FAILURE_MAX = 400;
+function firstFailureText(text) {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > FIRST_FAILURE_MAX ? `${flat.slice(0, FIRST_FAILURE_MAX - 1).trimEnd()}…` : flat;
+}
+
 const pct = (n, d) => Math.round((100 * n) / d);
 const round = (x, digits) => Number(x.toFixed(digits));
 const sum = (xs) => xs.reduce((a, b) => a + b, 0);
@@ -350,7 +510,7 @@ function main() {
       status: r.status,
       kind,
       graders: r.failed_graders ? r.failed_graders.split("+") : [],
-      firstFailure: r.first_failure,
+      firstFailure: firstFailureText(r.first_failure),
       toolCalls: Number(r.tool_calls),
       failedCalls: Number(r.failed_calls),
       turns: Number(r.turns),
@@ -375,10 +535,14 @@ function main() {
       .map((f) => readCase(path.join(casesDir, s.id, f))),
   );
   const caseById = new Map(caseFiles.map((c) => [c.id, c]));
+  const activeSuites = SUITES.filter((s) => runs.some((r) => r.suite === s.id));
+  for (const r of runs)
+    if (!activeSuites.some((s) => s.id === r.suite)) throw new Error(`unknown suite ${r.suite}`);
 
   const header = results.header;
   const runDate = header.started.slice(0, 10);
   const commit = header.gitSha.slice(0, 8);
+  const parts = parseParts(args.part, activeSuites, header);
 
   const providersByModel = {};
   const modelIdByKey = {};
@@ -423,13 +587,15 @@ function main() {
   });
 
   const armsBySuite = Object.fromEntries(
-    SUITES.map((s) => [
+    activeSuites.map((s) => [
       s.id,
       Object.keys(SETUPS).filter((arm) => runs.some((r) => r.suite === s.id && r.arm === arm)),
     ]),
   );
+  for (const r of runs)
+    if (!SETUPS[r.arm]) throw new Error(`unknown setup ${r.arm} in ${r.suite}`);
 
-  const suites = SUITES.map((s) => {
+  const suites = activeSuites.map((s) => {
     const ids = [...new Set(runs.filter((r) => r.suite === s.id).map((r) => r.case))];
     return { ...s, cases: ids.length, setups: armsBySuite[s.id] };
   });
@@ -451,29 +617,35 @@ function main() {
     setups.find((x) => x.suite === suite && x.arm === arm).results[m];
   const rateOf = (x) => (100 * x.pass) / x.runs;
 
+  const hasPair = (suite, [a, b]) => armsBySuite[suite].includes(a) && armsBySuite[suite].includes(b);
   const comparisons = {
-    skillUplift: MODEL_ORDER.map((m) => {
-      const a = setup("perf", "cli+skill", m);
-      const b = setup("perf", "cli-noskill", m);
-      return { suite: "perf", model: m, with: pct(a.pass, a.runs), without: pct(b.pass, b.runs), pp: Math.round(rateOf(a) - rateOf(b)) };
-    }),
-    cliVsMcp: [
-      ["perf", "cli+skill", "mcp"],
-      ["write", "cli-write+skill", "mcp-write"],
-    ].flatMap(([suite, cli, mcp]) =>
-      MODEL_ORDER.map((m) => {
-        const a = setup(suite, cli, m);
-        const b = setup(suite, mcp, m);
-        return { suite, cliArm: cli, mcpArm: mcp, model: m, cli: pct(a.pass, a.runs), mcp: pct(b.pass, b.runs), pp: Math.round(rateOf(a) - rateOf(b)) };
-      }),
+    skillUplift: suites
+      .filter((s) => hasPair(s.id, SKILL_PAIR))
+      .flatMap((s) =>
+        MODEL_ORDER.map((m) => {
+          const a = setup(s.id, SKILL_PAIR[0], m);
+          const b = setup(s.id, SKILL_PAIR[1], m);
+          return { suite: s.id, model: m, with: pct(a.pass, a.runs), without: pct(b.pass, b.runs), pp: Math.round(rateOf(a) - rateOf(b)) };
+        }),
+      ),
+    cliVsMcp: suites.flatMap((s) =>
+      CLI_MCP_PAIRS.filter((pair) => hasPair(s.id, pair)).flatMap(([cli, mcp]) =>
+        MODEL_ORDER.map((m) => {
+          const a = setup(s.id, cli, m);
+          const b = setup(s.id, mcp, m);
+          return { suite: s.id, cliArm: cli, mcpArm: mcp, model: m, cli: pct(a.pass, a.runs), mcp: pct(b.pass, b.runs), pp: Math.round(rateOf(a) - rateOf(b)) };
+        }),
+      ),
     ),
   };
 
-  const groupOf = (caseId) => GROUPS.find((g) => caseId === g.id || caseId.startsWith(`${g.id}-`)).id;
-  const groups = GROUPS.map((g) => {
+  const groups = GROUPS.filter((g) => runs.some((r) => groupOf(r.case) === g.id)).map((g) => {
     const own = runs.filter((r) => groupOf(r.case) === g.id);
     return {
-      ...g,
+      id: g.id,
+      code: g.code,
+      label: g.label,
+      description: g.description,
       cases: new Set(own.map((r) => r.case)).size,
       results: Object.fromEntries(
         MODEL_ORDER.map((m) => {
@@ -484,9 +656,13 @@ function main() {
     };
   });
 
+  // An issue names one case, or a prefix glob such as `debug-*` when it cuts
+  // across a suite.
+  const issueCovers = (issue, caseId) =>
+    issue.case.endsWith("*") ? caseId.startsWith(issue.case.slice(0, -1)) : caseId === issue.case;
   const issueOf = new Map();
-  const knownIssues = KNOWN_ISSUES.map((issue) => {
-    const caseRuns = runs.filter((r) => r.case === issue.case);
+  const knownIssues = KNOWN_ISSUES.filter((issue) => runs.some((r) => issueCovers(issue, r.case))).map((issue) => {
+    const caseRuns = runs.filter((r) => issueCovers(issue, r.case));
     const hit = caseRuns.filter((r) => r.status !== "pass" && issue.matches(r));
     if (!hit.length) throw new Error(`known issue ${issue.id} matches no run`);
     for (const r of hit) issueOf.set(r, issue.id);
@@ -540,7 +716,7 @@ function main() {
     };
   });
   for (const id of Object.keys(DESCRIPTION_OVERRIDES))
-    if (!caseIds.includes(id)) throw new Error(`description override for unknown case ${id}`);
+    if (!caseById.has(id)) throw new Error(`description override for unknown case ${id}`);
 
   const judge = modelsYaml.judge;
   const data = {
@@ -548,6 +724,7 @@ function main() {
       title: `Traceway agent benchmarks: ${runDate}`,
       date: runDate,
       commit,
+      parts,
       cliVersion: header.cliVersion,
       backendVersion: header.backendVersion,
       runsPerCase: Math.max(...results.runs.map((r) => r.runIdx)),
@@ -586,6 +763,12 @@ function crossCheck(data, summaryMd, statsMd) {
   const expect = (what, got, want) => {
     if (String(got) !== String(want)) errors.push(`${what}: generated ${got}, report says ${want}`);
   };
+  // runs.csv rounds each run's cost to five decimals, so a sum over hundreds
+  // of runs can differ from the harness's total by a cent.
+  const expectUsd = (what, got, want) => {
+    if (Math.abs(Number(got) - Number(String(want).replace("$", ""))) > 0.011)
+      errors.push(`${what}: generated ${got}, report says ${want}`);
+  };
 
   const runsLine = summaryMd.match(/\*\*Runs:\*\* (\d+) \(fail (\d+), pass (\d+)\)/);
   if (!runsLine) errors.push("summary.md: no Runs line");
@@ -598,8 +781,8 @@ function crossCheck(data, summaryMd, statsMd) {
   const spend = summaryMd.match(/\*\*Spend:\*\* \$([\d.]+) \(judge \$([\d.]+)\)/);
   if (!spend) errors.push("summary.md: no Spend line");
   else {
-    expect("judge spend", data.run.judgeCostUsd.toFixed(2), spend[2]);
-    expect("total spend", (data.run.agentCostUsd + data.run.judgeCostUsd).toFixed(2), spend[1]);
+    expectUsd("judge spend", data.run.judgeCostUsd.toFixed(2), spend[2]);
+    expectUsd("total spend", (data.run.agentCostUsd + data.run.judgeCostUsd).toFixed(2), spend[1]);
   }
 
   const setupOf = (suite, model, arm) =>
@@ -615,22 +798,32 @@ function crossCheck(data, summaryMd, statsMd) {
     expect(`${suite} ${model} ${arm} rate`, `${pct(s.pass, s.runs)}%`, rate);
   }
 
-  for (const [, model, w, wo, uplift] of tableRows(summaryMd, "## Skill uplift")) {
-    const u = data.comparisons.skillUplift.find((x) => x.model === model);
-    expect(`${model} skill uplift`, `${u.with}% ${u.without}% ${u.pp >= 0 ? "+" : ""}${u.pp}pp`, `${w} ${wo} ${uplift}`);
+  for (const [suite, model, w, wo, uplift] of tableRows(summaryMd, "## Skill uplift")) {
+    const u = data.comparisons.skillUplift.find((x) => x.suite === suite && x.model === model);
+    if (!u) {
+      errors.push(`summary.md skill uplift ${suite} ${model} not generated`);
+      continue;
+    }
+    expect(`${suite} ${model} skill uplift`, `${u.with}% ${u.without}% ${u.pp >= 0 ? "+" : ""}${u.pp}pp`, `${w} ${wo} ${uplift}`);
   }
 
-  for (const [suite, model, , , cli, mcp, delta] of tableRows(summaryMd, "## CLI vs MCP")) {
-    const c = data.comparisons.cliVsMcp.find((x) => x.suite === suite && x.model === model);
-    expect(`${suite} ${model} CLI vs MCP`, `${c.cli}% ${c.mcp}% ${c.pp >= 0 ? "+" : ""}${c.pp}pp`, `${cli} ${mcp} ${delta}`);
+  for (const [suite, model, cliArm, , cli, mcp, delta] of tableRows(summaryMd, "## CLI vs MCP")) {
+    const c = data.comparisons.cliVsMcp.find((x) => x.suite === suite && x.model === model && x.cliArm === cliArm);
+    if (!c) {
+      errors.push(`summary.md CLI vs MCP ${suite} ${model} ${cliArm} not generated`);
+      continue;
+    }
+    expect(`${suite} ${model} ${cliArm} CLI vs MCP`, `${c.cli}% ${c.mcp}% ${c.pp >= 0 ? "+" : ""}${c.pp}pp`, `${cli} ${mcp} ${delta}`);
   }
+  expect("skill uplift rows", data.comparisons.skillUplift.length, tableRows(summaryMd, "## Skill uplift").length);
+  expect("CLI vs MCP rows", data.comparisons.cliVsMcp.length, tableRows(summaryMd, "## CLI vs MCP").length);
 
   for (const row of tableRows(summaryMd, "## Cost (averages over passing runs)")) {
     const m = data.models.find((x) => x.key === row[0]);
     if (!m) continue;
     expect(`${m.key} passing runs`, m.totals.pass, row[1]);
     expect(`${m.key} cache hit`, `${Math.round(100 * m.totals.cacheHitRate)}%`, row[6]);
-    expect(`${m.key} agent spend`, `$${m.totals.costUsd.toFixed(2)}`, row[7]);
+    expectUsd(`${m.key} agent spend`, m.totals.costUsd.toFixed(2), row[7]);
   }
 
   for (const row of tableRows(statsMd, "| Model | Suite | Setup | Pass |")) {
@@ -642,10 +835,10 @@ function crossCheck(data, summaryMd, statsMd) {
     }
     expect(`${suite} ${model} ${arm} right answer and evidence`, `${s.rightAnswerEvidence}/${s.runs} (${pct(s.rightAnswerEvidence, s.runs)}%)`, rae);
     expect(`${suite} ${model} ${arm} not graded`, 0, notGraded);
-    expect(`${suite} ${model} ${arm} cost`, `$${s.costUsd.toFixed(2)}`, cost);
+    expectUsd(`${suite} ${model} ${arm} cost`, s.costUsd.toFixed(2), cost);
     expect(`${suite} ${model} ${arm} avg calls`, s.avgToolCalls.toFixed(1), calls);
     expect(`${suite} ${model} ${arm} cache hit`, `${Math.round(100 * s.cacheHitRate)}%`, cache);
-    expect(`${suite} ${model} ${arm} judge`, s.avgJudge.toFixed(2), judge);
+    expect(`${suite} ${model} ${arm} judge`, s.avgJudge === null ? "0.00" : s.avgJudge.toFixed(2), judge);
   }
 
   if (errors.length) {
@@ -659,6 +852,7 @@ const usd = (x, digits) => `$${x.toFixed(digits)}`;
 const frac = (pass, runs) => `${pass}/${runs} (${pct(pass, runs)}%)`;
 const signedPp = (pp) => `${pp >= 0 ? "+" : "-"}${Math.abs(pp)}pp`;
 const words = ["zero", "one", "two", "three", "four", "five"];
+const joinWords = (xs) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
 
 function yamlScalar(v) {
   return typeof v === "number" ? String(v) : JSON.stringify(v);
@@ -697,6 +891,7 @@ function renderMarkdown(data) {
     title: run.title,
     date: run.date,
     commit: run.commit,
+    parts: run.parts.map((p) => ({ suites: p.suites.join(","), commit: p.commit, date: p.date })),
     cliVersion: run.cliVersion,
     backendVersion: run.backendVersion,
     harnessUrl: run.harnessUrl,
@@ -719,20 +914,34 @@ function renderMarkdown(data) {
   };
 
   const comparisonRows = [
-    ...comparisons.skillUplift.length
-      ? [["Skill uplift", "perf", "cli+skill", "cli-noskill", ...models.map((m) => {
-          const u = comparisons.skillUplift.find((x) => x.model === m.key);
-          return `${signedPp(u.pp)} (${u.with}% vs ${u.without}%)`;
-        })]]
-      : [],
-    ...[...new Set(comparisons.cliVsMcp.map((c) => c.suite))].map((suite) => {
-      const first = comparisons.cliVsMcp.find((c) => c.suite === suite);
-      return ["CLI vs MCP", suite, first.cliArm, first.mcpArm, ...models.map((m) => {
-        const c = comparisons.cliVsMcp.find((x) => x.suite === suite && x.model === m.key);
+    ...[...new Set(comparisons.skillUplift.map((u) => u.suite))].map((suite) => [
+      "Skill uplift",
+      suite,
+      SKILL_PAIR[0],
+      SKILL_PAIR[1],
+      ...models.map((m) => {
+        const u = comparisons.skillUplift.find((x) => x.suite === suite && x.model === m.key);
+        return `${signedPp(u.pp)} (${u.with}% vs ${u.without}%)`;
+      }),
+    ]),
+    ...[...new Map(comparisons.cliVsMcp.map((c) => [`${c.suite} ${c.cliArm}`, c])).values()].map((first) => [
+      "CLI vs MCP",
+      first.suite,
+      first.cliArm,
+      first.mcpArm,
+      ...models.map((m) => {
+        const c = comparisons.cliVsMcp.find((x) => x.suite === first.suite && x.cliArm === first.cliArm && x.model === m.key);
         return `${signedPp(c.pp)} (${c.cli}% vs ${c.mcp}%)`;
-      })];
-    }),
+      }),
+    ]),
   ];
+
+  const partsText =
+    run.parts.length > 1
+      ? ` in ${words[run.parts.length]} batches: ${run.parts
+          .map((p) => `${joinWords(p.suites)} on ${p.date} at commit \`${p.commit}\``)
+          .join(", ")}`
+      : ` on ${run.date}, at commit \`${run.commit}\``;
 
   const metricRows = [
     [COST_METRICS.spend, ...models.map((m) => usd(m.totals.costUsd, 2))],
@@ -791,7 +1000,7 @@ ${yamlBlock(front)}
 
 # ${run.title}
 
-${words[models.length][0].toUpperCase()}${words[models.length].slice(1)} models, ${modelList}, each ran the same ${run.runsPerModel} eval runs on ${run.date}, at commit \`${run.commit}\`. Every run gets a fresh Traceway backend seeded with the telemetry of a system broken in one specific way, and deterministic code grades the result. [How we measure](${run.methodologyUrl}) · [the harness and the cases](${run.harnessUrl}).
+${words[models.length][0].toUpperCase()}${words[models.length].slice(1)} models, ${modelList}, each ran the same ${run.runsPerModel} eval runs${partsText}. Every run gets a fresh Traceway backend seeded with the telemetry of a system broken in one specific way, and deterministic code grades the result. [How we measure](${run.methodologyUrl}) · [the harness and the cases](${run.harnessUrl}).
 
 This file is generated by \`website/scripts/build-benchmarks-data.mjs\` from the eval results and is the data behind ${PAGE_URL}. Change the generator, not this file.
 
@@ -833,8 +1042,8 @@ ${mdTable(["Comparison", "Suite", "Setup A", "Setup B", ...labels], comparisonRo
 Passes over every setup a case ran on.
 
 ${mdTable(
-  ["Group", "Label", "Description", "Cases", ...labels],
-  groups.map((g) => [g.id, g.label, g.description, g.cases, ...models.map((m) => frac(g.results[m.key].pass, g.results[m.key].runs))]),
+  ["Group", "Label", "Code", "Description", "Cases", ...labels],
+  groups.map((g) => [g.id, g.label, g.code, g.description, g.cases, ...models.map((m) => frac(g.results[m.key].pass, g.results[m.key].runs))]),
 )}
 
 ## ${SECTIONS.cost}
@@ -892,6 +1101,7 @@ function parseBack(data, markdown, summaryMd) {
 
   expect("total runs", parsed.run.totalRuns, data.run.totalRuns);
   expect("commit", parsed.run.commit, data.run.commit);
+  expect("parts", JSON.stringify(parsed.run.parts), JSON.stringify(data.run.parts));
   expect("all graded", parsed.run.allGraded, (data.run.statuses.pass ?? 0) + (data.run.statuses.fail ?? 0) === data.run.totalRuns);
   for (const m of data.models) {
     const p = parsed.models.find((x) => x.key === m.key);
@@ -918,7 +1128,7 @@ function parseBack(data, markdown, summaryMd) {
   expect("comparisons", JSON.stringify(parsed.comparisons), JSON.stringify(data.comparisons));
   for (const g of data.groups) {
     const p = parsed.groups.find((y) => y.id === g.id);
-    const fold = (x) => [x.cases, ...data.models.map((m) => `${x.results[m.key].pass}/${x.results[m.key].runs}`)].join(" ");
+    const fold = (x) => [x.code, x.cases, ...data.models.map((m) => `${x.results[m.key].pass}/${x.results[m.key].runs}`)].join(" ");
     expect(`group ${g.id}`, p && fold(p), fold(g));
   }
   for (const i of data.knownIssues) {

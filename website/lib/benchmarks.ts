@@ -71,7 +71,7 @@ export type BenchmarkCase = {
 
 export type KnownIssue = {
   id: string;
-  kind: "skill" | "case";
+  kind: "skill" | "case" | "harness";
   case: string;
   title: string;
   detail: string;
@@ -84,16 +84,22 @@ export type KnownIssue = {
 export type Group = {
   id: string;
   label: string;
+  code: string;
   description: string;
   cases: number;
   results: Record<ModelKey, { runs: number; pass: number }>;
 };
+
+// One batch of runs: which suites ran on which day at which commit. A page
+// built from one run has one part.
+export type RunPart = { suites: string[]; commit: string; date: string };
 
 export type BenchmarkData = {
   run: {
     title: string;
     date: string;
     commit: string;
+    parts: RunPart[];
     cliVersion: string;
     backendVersion: string;
     harnessUrl: string;
@@ -325,6 +331,7 @@ export function parseBenchmark(source: string): BenchmarkData {
   const groups: Group[] = table(tables, SECTIONS.groups).rows.map((r) => ({
     id: cell(r, "Group"),
     label: cell(r, "Label"),
+    code: cell(r, "Code"),
     description: cell(r, "Description"),
     cases: num(cell(r, "Cases")),
     results: perModel((label) => fraction(cell(r, label))),
@@ -393,11 +400,16 @@ export function parseBenchmark(source: string): BenchmarkData {
   }));
 
   const totalRuns = models.reduce((n, m) => n + m.totals.runs, 0);
+  const fmParts = (fm.parts ?? []) as { suites: string; commit: string; date: string }[];
+  const parts: RunPart[] = fmParts.length
+    ? fmParts.map((p) => ({ suites: String(p.suites).split(","), commit: String(p.commit), date: String(p.date) }))
+    : [{ suites: (fm.suites as { id: string }[]).map((s) => s.id), commit: String(fm.commit), date: String(fm.date) }];
   return {
     run: {
       title: String(fm.title),
       date: String(fm.date),
       commit: String(fm.commit),
+      parts,
       cliVersion: String(fm.cliVersion),
       backendVersion: String(fm.backendVersion),
       harnessUrl: String(fm.harnessUrl),

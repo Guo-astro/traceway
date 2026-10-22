@@ -80,9 +80,27 @@ function pickBy(score: (m: Model) => number, best: "max" | "min") {
 }
 
 const best = pickBy((m) => m.totals.pass, "max");
-const value = pickBy((m) => m.totals.costUsd / m.totals.pass, "min");
-const upliftOf = (key: ModelKey) =>
-  comparisons.skillUplift.find((u) => u.model === key)!;
+const costPerPass = (m: Model) => m.totals.costUsd / m.totals.pass;
+const value = pickBy(costPerPass, "min");
+// The next cheapest model per passing run, which is what the value pick is
+// measured against.
+const runnerUp = models
+  .filter((m) => m.key !== value.key)
+  .sort((a, b) => costPerPass(a) - costPerPass(b))[0];
+const distinctSetups = new Set(setups.map((s) => s.arm)).size;
+const hasSuite = (id: string) => suites.some((s) => s.id === id);
+const upliftOf = (key: ModelKey, suite = "perf") =>
+  comparisons.skillUplift.find((u) => u.suite === suite && u.model === key)!;
+const upliftSuites = [...new Set(comparisons.skillUplift.map((u) => u.suite))];
+// One row per (suite, CLI arm) pair the harness compares. A pair carried by a
+// single case (debug-no-writes on the write arms) is kept in the data but not
+// shown as a difference: one run is not a rate.
+const cliMcpPairs = [
+  ...new Map(comparisons.cliVsMcp.map((c) => [`${c.suite} ${c.cliArm}`, c])).values(),
+].filter(
+  (c) =>
+    setups.find((s) => s.suite === c.suite && s.arm === c.cliArm)!.results[models[0].key].runs >= 3,
+);
 const biggestUplift = pickBy((m) => upliftOf(m.key).pp, "max");
 const cheapest = pickBy((m) => m.totals.costUsd, "min");
 const priciest = pickBy((m) => m.totals.costUsd, "max");
@@ -106,6 +124,26 @@ const mcpFavoured = models.filter((m) => mcpPerf(m.key).pp < 0);
 const upliftOrder = [...models].sort(
   (a, b) => upliftOf(b.key).pp - upliftOf(a.key).pp,
 );
+
+const suitePasses = (suiteId: string, key: ModelKey) =>
+  setups
+    .filter((s) => s.suite === suiteId)
+    .reduce((n, s) => n + s.results[key].pass, 0);
+const suiteRuns = (suiteId: string, key: ModelKey) =>
+  setups
+    .filter((s) => s.suite === suiteId)
+    .reduce((n, s) => n + s.results[key].runs, 0);
+const byDebug = hasSuite("debug")
+  ? [...models].sort(
+      (a, b) => suitePasses("debug", b.key) - suitePasses("debug", a.key),
+    )
+  : [];
+const noWrites = cases.find((c) => c.id === "debug-no-writes");
+const noWritesClean = noWrites
+  ? models.filter((m) =>
+      Object.values(noWrites.runs[m.key]).every((r) => r.status === "pass"),
+    )
+  : [];
 
 const costPoints: CostPoint[] = [
   ...setups.flatMap((s) =>
@@ -173,7 +211,7 @@ const indexViews: IndexView[] = [
         model: m.key,
         weights: m.weights,
         label: m.short,
-        detail: s.suite === "perf" ? `Perf · ${s.label}` : s.label,
+        detail: `${suiteLabel[s.suite]} · ${s.label}`,
         pass: s.results[m.key].pass,
         rightAnswerEvidence: s.results[m.key].rightAnswerEvidence,
         runs: s.results[m.key].runs,
@@ -199,9 +237,9 @@ const indexViews: IndexView[] = [
   },
 ];
 
-const indexSubtitle = `Traceway agent evals, run ${run.date}. ${suites
-  .map((s) => `${s.label} (${s.cases} cases)`)
-  .join(" and ")} on ${setups.length} setups, ${run.runsPerCase} run per case, graded by deterministic code.`;
+const indexSubtitle = `Traceway agent evals, run ${run.date}. ${joinList(
+  suites.map((s) => `${s.label} (${s.cases} cases)`),
+)} on ${distinctSetups} setups, ${run.runsPerCase} run per case, graded by deterministic code.`;
 
 const byPass = [...models].sort((a, b) => b.totals.pass - a.totals.pass);
 const pctText = (pass: number, runs: number) =>
@@ -230,6 +268,8 @@ const perModelRow = (
   >,
 });
 const suiteCases = (id: string) => suites.find((s) => s.id === id)!.cases;
+const armCases = (suite: string, arm: string) =>
+  setupResult(suite, arm, models[0].key).runs;
 const GROUP_ORDER = [
   "perf-ctl",
   "perf-db",
@@ -238,7 +278,11 @@ const GROUP_ORDER = [
   "perf-cache",
   "perf-infra",
   "perf-xs",
-];
+  "debug-backend",
+  "debug-mobile",
+  "debug-ctl",
+  "setup",
+].filter((id) => groupById[id]);
 const smallestGroup = Math.min(
   ...groups.map((g) => g.results[models[0].key].runs),
 );
@@ -256,6 +300,23 @@ const comparisonRows: ComparisonRow[] = [
     `perf · ${suiteCases("perf")} cases, MCP server`,
     (k) => [passValue(setupResult("perf", "mcp", k))],
   ),
+  ...(hasSuite("debug")
+    ? [
+        perModelRow(
+          "Root-cause debugging",
+          `debug · ${armCases("debug", "cli+skill")} cases, CLI`,
+          (k) => [
+            passValue(setupResult("debug", "cli+skill", k), "with the skill"),
+            passValue(setupResult("debug", "cli-noskill", k), "without the skill"),
+          ],
+        ),
+        perModelRow(
+          "Root-cause debugging over MCP",
+          `debug · ${armCases("debug", "mcp")} cases, MCP server`,
+          (k) => [passValue(setupResult("debug", "mcp", k))],
+        ),
+      ]
+    : []),
   perModelRow(
     "Safe write actions",
     `write · ${suiteCases("write")} cases`,
@@ -341,7 +402,7 @@ export default function BenchmarksPage() {
                 num: `<em>${suites.reduce((n, s) => n + s.cases, 0)}</em>`,
                 label: "Cases",
               },
-              { num: `<em>${setups.length}</em>`, label: "Setups" },
+              { num: `<em>${distinctSetups}</em>`, label: "Setups" },
               { num: `<em>${models.length}</em>`, label: "Models" },
             ]}
           />
@@ -433,14 +494,18 @@ export default function BenchmarksPage() {
             </Finding>
             <Finding label="02 · Value" title={`${value.short} is the value pick.`}>
               {rate(value.totals.pass, value.totals.runs)}% of its runs passed for{" "}
-              {formatUsd(value.totals.costUsd)} of agent spend, against{" "}
-              {rate(totalsOf("haiku").pass, totalsOf("haiku").runs)}% for{" "}
-              {formatUsd(totalsOf("haiku").costUsd)} with {modelByKey.haiku.short}:{" "}
-              {value.totals.pass - totalsOf("haiku").pass} more passing runs at
-              about the same price. {best.short} passed{" "}
-              {best.totals.pass - value.totals.pass} more again, for{" "}
-              {Math.round(best.totals.costUsd / value.totals.costUsd)}× the
-              spend. On MCP perf, {value.short} is{" "}
+              {formatUsd(value.totals.costUsd)} of agent spend,{" "}
+              {formatUsd(costPerPass(value))} per passing run. {runnerUp.short} is
+              next at {formatUsd(costPerPass(runnerUp))} per passing run:{" "}
+              {rate(runnerUp.totals.pass, runnerUp.totals.runs)}% passed for{" "}
+              {formatUsd(runnerUp.totals.costUsd)},{" "}
+              {Math.abs(runnerUp.totals.pass - value.totals.pass)}{" "}
+              {runnerUp.totals.pass >= value.totals.pass ? "more" : "fewer"} passing
+              runs.
+              {best.key !== value.key && best.key !== runnerUp.key
+                ? ` ${best.short} passed ${best.totals.pass - Math.max(value.totals.pass, runnerUp.totals.pass)} more again, for ${Math.round(best.totals.costUsd / value.totals.costUsd)}× ${value.short}'s spend.`
+                : null}{" "}
+              On MCP perf, {value.short} is{" "}
               {mcpPerf(best.key).mcp - mcpPerf(value.key).mcp}pp behind{" "}
               {best.short}.
             </Finding>
@@ -453,8 +518,15 @@ export default function BenchmarksPage() {
                 upliftOrder.map((m) => `${m.short} ${formatPp(upliftOf(m.key).pp)}`),
               )}
               .{" "}
+              {upliftSuites.includes("debug")
+                ? `On the debug suite: ${joinList(
+                    upliftOrder.map(
+                      (m) => `${m.short} ${formatPp(upliftOf(m.key, "debug").pp)}`,
+                    ),
+                  )}. `
+                : null}
               {mcpFavoured.length === 1
-                ? `${mcpFavoured[0].short} is the only model that does better on MCP (${mcpPerf(mcpFavoured[0].key).mcp}%) than on CLI + skill (${mcpPerf(mcpFavoured[0].key).cli}%).`
+                ? `${mcpFavoured[0].short} is the only model that does better on MCP perf (${mcpPerf(mcpFavoured[0].key).mcp}%) than on CLI + skill (${mcpPerf(mcpFavoured[0].key).cli}%).`
                 : null}
             </Finding>
             <Finding label="04 · Our bugs" title="Some failures are ours.">
@@ -469,6 +541,43 @@ export default function BenchmarksPage() {
               )}
               . We still count them as failures. Here they are.
             </Finding>
+            {hasSuite("debug") ? (
+              <Finding
+                label="05 · Fixing code"
+                title={`${byDebug[0].short} fixes the most bugs.`}
+              >
+                On the debug suite the agent has to find the culprit from the
+                telemetry and patch it, and hidden tests check the fix.{" "}
+                {joinList(
+                  byDebug.map(
+                    (m) =>
+                      `${m.short} passed ${suitePasses("debug", m.key)} of ${suiteRuns("debug", m.key)}`,
+                  ),
+                )}
+                . Backend fixes checked by hidden tests:{" "}
+                {joinList(
+                  models.map(
+                    (m) =>
+                      `${m.short} ${groupById["debug-backend"].results[m.key].pass}/${groupById["debug-backend"].results[m.key].runs}`,
+                  ),
+                )}
+                ; mobile crashes checked statically:{" "}
+                {joinList(
+                  models.map(
+                    (m) =>
+                      `${m.short} ${groupById["debug-mobile"].results[m.key].pass}/${groupById["debug-mobile"].results[m.key].runs}`,
+                  ),
+                )}
+                .{" "}
+                {noWrites
+                  ? noWritesClean.length === models.length
+                    ? "Every model handled the cleanup request with a write credential by fixing the code and changing nothing in Traceway."
+                    : noWritesClean.length
+                      ? `Given a write credential and asked to clean up, ${joinList(noWritesClean.map((m) => m.short))} fixed the code and changed nothing in Traceway on both setups; ${joinList(models.filter((m) => !noWritesClean.includes(m)).map((m) => m.short))} did not.`
+                      : "No model handled the cleanup request with a write credential cleanly on both setups."
+                  : null}
+              </Finding>
+            ) : null}
           </div>
 
           <div className="mt-14 grid gap-5 md:grid-cols-2">
@@ -476,7 +585,11 @@ export default function BenchmarksPage() {
               <div key={issue.id} className="rounded-2xl p-6" style={CARD_STYLE}>
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="tag">
-                    {issue.kind === "skill" ? "Skill bug" : "Case bug"}
+                    {issue.kind === "skill"
+                      ? "Skill bug"
+                      : issue.kind === "harness"
+                        ? "Harness bug"
+                        : "Case bug"}
                   </span>
                   <code>{issue.case}</code>
                 </div>
@@ -488,7 +601,7 @@ export default function BenchmarksPage() {
                 </p>
                 <p className="mt-4 font-mono text-[0.75rem] text-fg-2">
                   {issue.truncated
-                    ? `${issue.affectedRuns} of ${issue.caseRuns} runs failed, ${issue.truncated} of them on truncated output. `
+                    ? `It hit ${issue.affectedRuns} of the ${issue.caseRuns} runs it covers, ${issue.truncated === issue.affectedRuns ? "all" : issue.truncated} on truncated output. `
                     : ""}
                   Runs hit:{" "}
                   {models.map((m) => `${m.short} ${issue.byModel[m.key]}`).join(" · ")}
@@ -506,7 +619,13 @@ export default function BenchmarksPage() {
                 Pass rate by suite <em>and setup.</em>
               </>
             }
-            description="Perf cases run with the CLI and skill, the CLI alone as a control group, and the MCP server. Write cases run with the write CLI and skill, and the write MCP server."
+            description={`${joinList(
+              suites
+                .filter((s) => s.setups.includes("cli-noskill"))
+                .map((s) => s.label),
+            )} cases run with the CLI and skill, the CLI alone as a control group, and the MCP server. Write cases${
+              noWrites ? ", and the debug case that hands the agent a write credential," : ""
+            } run with the write CLI and skill, and the write MCP server.`}
           />
           <DataTable minWidth={760}>
             <thead>
@@ -536,22 +655,26 @@ export default function BenchmarksPage() {
                 ))}
               </tr>
               <SubheadRow label="Differences" span={models.length + 1} />
-              <DeltaRow
-                title="Skill uplift, perf"
-                sub="CLI + skill minus CLI without the skill"
-                cells={models.map((m) => {
-                  const u = upliftOf(m.key);
-                  return { key: m.key, pp: u.pp, detail: `${u.with}% vs ${u.without}%` };
-                })}
-              />
-              {suites.map((s) => (
+              {upliftSuites.map((suite) => (
                 <DeltaRow
-                  key={s.id}
-                  title={`CLI vs MCP, ${s.id}`}
-                  sub={`${setupLabels[s.setups[0]]} minus ${setupLabels[s.setups[s.setups.length - 1]]}`}
+                  key={suite}
+                  title={`Skill uplift, ${suite}`}
+                  sub="CLI + skill minus CLI without the skill"
+                  cells={models.map((m) => {
+                    const u = upliftOf(m.key, suite);
+                    return { key: m.key, pp: u.pp, detail: `${u.with}% vs ${u.without}%` };
+                  })}
+                />
+              ))}
+              {cliMcpPairs.map((p) => (
+                <DeltaRow
+                  key={`${p.suite}-${p.cliArm}`}
+                  title={`CLI vs MCP, ${p.suite}`}
+                  sub={`${setupLabels[p.cliArm]} minus ${setupLabels[p.mcpArm]}`}
                   cells={models.map((m) => {
                     const c = comparisons.cliVsMcp.find(
-                      (x) => x.suite === s.id && x.model === m.key,
+                      (x) =>
+                        x.suite === p.suite && x.cliArm === p.cliArm && x.model === m.key,
                     )!;
                     return { key: m.key, pp: c.pp, detail: `${c.cli}% vs ${c.mcp}%` };
                   })}
@@ -574,7 +697,9 @@ export default function BenchmarksPage() {
                 Where each model <em>wins and loses.</em>
               </>
             }
-            description="Passes over every setup a case ran on. Groups follow the case names: perf-db-n-plus-1 is in Database, perf-ctl-healthy in Controls and traps."
+            description={`Passes over every setup a case ran on. Groups follow the case names: perf-db-n-plus-1 is in Database, perf-ctl-healthy in Controls and traps${
+              hasSuite("debug") ? ", and the debug groups follow the stack the fix is in" : ""
+            }.`}
           />
           <DataTable minWidth={820}>
             <thead>
@@ -592,7 +717,7 @@ export default function BenchmarksPage() {
                   <tr key={g.id} style={{ borderTop: "1px solid var(--hair)" }}>
                     <RowHead
                       title={g.label}
-                      code={g.id === "write" ? "write-*" : `${g.id}-*`}
+                      code={g.code}
                       sub={`${g.cases} cases · ${g.results[models[0].key].runs} runs per model`}
                       description={g.description}
                     />
@@ -707,8 +832,13 @@ export default function BenchmarksPage() {
               </tbody>
             </DataTable>
             <p className="dim mt-4 text-[0.8125rem]">
-              Runs went three at a time on one machine, so wall time includes
-              some contention.{" "}
+              Runs went three at a time on one machine
+              {run.parts.length > 1
+                ? `, in ${numberWord(run.parts.length)} batches (${run.parts
+                    .map((p) => `${joinList(p.suites)} on ${p.date}`)
+                    .join("; ")})`
+                : ""}
+              , so wall time includes some contention.{" "}
               {models
                 .filter((m) => m.totals.judged < m.totals.runs)
                 .map(
@@ -749,7 +879,16 @@ export default function BenchmarksPage() {
               How we <em>measure.</em>
             </>
           }
-          description={`Each task is a fresh Traceway backend seeded with weeks of telemetry from a system broken in one way, plus a planted red herring. The model works with the real CLI or MCP server, and deterministic graders check its answer, its evidence and anything it changed. All runs on ${run.date}, at commit ${run.commit}, ${run.runsPerCase} run per case.`}
+          description={`Each task is a fresh Traceway backend seeded with weeks of telemetry from a system broken in one way, plus a planted red herring. The model works with the real CLI or MCP server, and deterministic graders check its answer, its evidence and anything it changed. ${
+            run.parts.length > 1
+              ? run.parts
+                  .map(
+                    (p) =>
+                      `${capitalize(joinList(p.suites))} ran on ${p.date} at commit ${p.commit}`,
+                  )
+                  .join("; ")
+              : `All runs on ${run.date}, at commit ${run.commit}`
+          }, ${run.runsPerCase} run per case.`}
           cta={
             <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
               <Link
@@ -780,7 +919,7 @@ export default function BenchmarksPage() {
             Give your agent <em>production context.</em>
           </>
         }
-        description="Install the skill or connect the MCP server, and let your agent take the next slow endpoint."
+        description="Install the skill or connect the MCP server, and let your agent take the next slow endpoint or the next crash."
         primary={{ label: "Explore Agent Skills", href: "/product/agent-skills" }}
         secondary={{ label: "See the MCP server", href: "/product/mcp" }}
       />
