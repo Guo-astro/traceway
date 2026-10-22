@@ -35,13 +35,13 @@ export function BenchmarkComparisonTable({
   return (
     <div className="overflow-x-auto">
       <table
-        className="w-full min-w-[560px] border-separate text-left md:min-w-[680px]"
-        style={{ borderSpacing: 0 }}
+        className="w-full border-separate text-left"
+        style={{ borderSpacing: 0, minWidth: 200 + models.length * 120 }}
       >
         <thead>
           <tr>
             <th
-              className="sticky left-0 z-10 w-[132px] pb-3 md:static md:w-[26%]"
+              className="sticky left-0 z-10 w-[132px] pb-3 md:static md:w-[200px]"
               style={{ background: "var(--ink-0)" }}
             />
             {models.map((m) => {

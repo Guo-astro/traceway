@@ -45,9 +45,10 @@ const capitalize = (s: string) => s[0].toUpperCase() + s.slice(1);
 // batch narrowed to the setups run again after a fix, "the debug CLI + skill
 // runs ran again on ... at commit ...".
 const partText = (p: (typeof run.parts)[number], withCommit: boolean) => {
-  if (!p.arms) return `${joinList(p.suites)} ${withCommit ? "ran " : ""}on ${p.date}${withCommit ? ` at commit ${p.commit}` : ""}`;
+  const forModels = p.models ? ` for ${joinList(p.models.map((k) => modelByKey[k].short))}` : "";
+  if (!p.arms) return `${joinList(p.suites)}${forModels} ${withCommit ? "ran " : ""}on ${p.date}${withCommit ? ` at commit ${p.commit}` : ""}`;
   const labels = p.arms.map((a) => setupLabels[a] ?? a);
-  return `the ${joinList(p.suites)} ${joinList(labels)} runs ${withCommit ? "ran again" : "again"} on ${p.date}${withCommit ? `, with the skill fix of commit ${p.commit}` : ""}`;
+  return `the ${joinList(p.suites)} ${joinList(labels)} runs${forModels} ${withCommit ? "ran again" : "again"} on ${p.date}${withCommit ? `, with the skill fix of commit ${p.commit}` : ""}`;
 };
 const regradedText = run.regraded
   ? ` Every saved transcript was scored on ${run.regraded} by the same graders: after a grader fix the transcripts are scored again, so no number here mixes two versions of a grader.`
@@ -149,6 +150,12 @@ const mcpGapText = (a: ModelKey, b: ModelKey) => {
 const upliftOrder = [...models].sort(
   (a, b) => upliftOf(b.key).pp - upliftOf(a.key).pp,
 );
+// The model with the lowest perf pass rate on the CLI without the skill.
+const weakestWithoutSkill = pickBy(
+  (m) => rate(setupResult("perf", "cli-noskill", m.key).pass, setupResult("perf", "cli-noskill", m.key).runs),
+  "min",
+);
+const controlsClean = (m: Model) => controls.results[m.key].pass === controls.results[m.key].runs;
 
 const suitePasses = (suiteId: string, key: ModelKey) =>
   setups
@@ -499,8 +506,8 @@ export default function BenchmarksPage() {
             description={`Every model ran the same ${run.runsPerModel} runs. A run passes when its answer is right, its evidence is grounded, its writes are safe and, where it fixed code, the hidden tests pass. Tool-call counts are reported but never gate.`}
           />
           <BenchmarkIndexChart views={indexViews} subtitle={indexSubtitle} />
-          <div className="mt-8 grid gap-5 md:grid-cols-3">
-            {models.map((m) => (
+          <div className="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+            {byPass.map((m) => (
               <ModelCard key={m.key} model={m} badges={BADGES[m.key] ?? []} />
             ))}
           </div>
@@ -557,7 +564,14 @@ export default function BenchmarksPage() {
             }
           />
           <div className="grid gap-12 md:grid-cols-2">
-            <Finding label="01 · Judgment" title={`${byControls[0].short} never false-alarms.`}>
+            <Finding
+              label="01 · Judgment"
+              title={
+                controlsClean(byControls[0])
+                  ? `${joinList(byControls.filter(controlsClean).map((m) => m.short))} ${byControls.filter(controlsClean).length === 1 ? "never false-alarms" : "never false-alarm"}.`
+                  : `${byControls[0].short} false-alarms least.`
+              }
+            >
               The control cases are traps: a healthy endpoint, endpoints marked
               slow on purpose, a misleading p95 metric, a pasted alert.{" "}
               {byControls[0].short} passed {controls.results[byControls[0].key].pass}{" "}
@@ -586,7 +600,11 @@ export default function BenchmarksPage() {
             </Finding>
             <Finding
               label="03 · The skill"
-              title="The skill helps the weakest model most."
+              title={
+                upliftOrder[0].key === weakestWithoutSkill.key
+                  ? "The skill helps the weakest model most."
+                  : `The skill helps ${upliftOrder[0].short} most.`
+              }
             >
               On the perf suite, CLI + skill against the same CLI without it:{" "}
               {joinList(
@@ -602,7 +620,9 @@ export default function BenchmarksPage() {
                 : null}
               {mcpFavoured.length === 1
                 ? `${mcpFavoured[0].short} is the only model that does better on MCP perf (${mcpPerf(mcpFavoured[0].key).mcp}%) than on CLI + skill (${mcpPerf(mcpFavoured[0].key).cli}%).`
-                : null}
+                : mcpFavoured.length > 1
+                  ? `${joinList(mcpFavoured.map((m) => `${m.short} (${mcpPerf(m.key).mcp}% vs ${mcpPerf(m.key).cli}%)`))} do better on MCP perf than on CLI + skill.`
+                  : null}
             </Finding>
             <Finding label="04 · Our bugs" title="Some failures are ours.">
               {capitalize(numberWord(knownIssues.length))} problems behind
@@ -702,7 +722,7 @@ export default function BenchmarksPage() {
               noWrites ? ", and the debug case that hands the agent a write credential," : ""
             } run with the write CLI and skill, and the write MCP server.`}
           />
-          <DataTable minWidth={760}>
+          <DataTable minWidth={190 + models.length * 160}>
             <thead>
               <tr>
                 <Th>Setup</Th>
@@ -777,7 +797,7 @@ export default function BenchmarksPage() {
               hasSuite("debug") ? ", and the debug groups follow the stack the fix is in" : ""
             }.`}
           />
-          <DataTable minWidth={820}>
+          <DataTable minWidth={340 + models.length * 160}>
             <thead>
               <tr>
                 <Th>Group</Th>
@@ -882,7 +902,7 @@ export default function BenchmarksPage() {
           </div>
 
           <div className="mt-10">
-            <DataTable minWidth={700}>
+            <DataTable minWidth={190 + models.length * 130}>
               <thead>
                 <tr>
                   <Th>All {run.runsPerModel} runs</Th>

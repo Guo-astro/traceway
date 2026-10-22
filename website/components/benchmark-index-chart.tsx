@@ -55,7 +55,7 @@ export function BenchmarkIndexChart({
   const view = views.find((v) => v.id === viewId) ?? views[0];
   const value = (b: IndexBar) => rate(b[metric], b.runs);
   const bars = [...view.bars].sort((a, b) => value(b) - value(a));
-  const dense = bars.length > 6;
+  const dense = bars.length > 8;
   const minWidth = dense ? 64 + bars.length * 46 : 0;
   const metricLabel = METRICS.find((m) => m.id === metric)!.label;
 

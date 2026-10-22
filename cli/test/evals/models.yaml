@@ -129,11 +129,13 @@ agents:
     fallback_price: {prompt: 0.15, completion: 0.60, cache_read: 0.015, cache_write: 0.15}
 
   mimo-pro:
+    # Xiaomi first party only: with fallbacks on, the smoke run was served by
+    # DeepInfra although Xiaomi was up.
     id: xiaomi/mimo-v2.6-pro
     label: MiMo-V2.6 Pro
     provider:
       order: [xiaomi]
-      allow_fallbacks: true
+      allow_fallbacks: false
     caching: automatic
     reasoning_effort: medium
     max_tokens_per_turn: 16000
