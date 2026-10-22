@@ -1,8 +1,10 @@
 import Link from "next/link";
 import type { Metadata } from "next";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Github } from "lucide-react";
 
 import { SectionHead } from "@/components/section-head";
+import { Eyebrow } from "@/components/eyebrow";
+import { SectionShareLink } from "@/components/section-share-link";
 import { StatsStrip } from "@/components/stats-strip";
 import { FinalCTA } from "@/components/final-cta";
 import { AuroraBackground } from "@/components/aurora-background";
@@ -29,6 +31,7 @@ import {
   rate,
 } from "@/lib/benchmark-format";
 import type { Model, ModelKey } from "@/lib/benchmarks";
+import { GITHUB_URL } from "@/lib/links";
 
 const { run, models, suites, setups, comparisons, groups, knownIssues, cases } =
   BENCHMARK;
@@ -41,24 +44,25 @@ const setupLabels = Object.fromEntries(setups.map((s) => [s.arm, s.label]));
 const suiteLabel = Object.fromEntries(suites.map((s) => [s.id, s.label]));
 const groupById = Object.fromEntries(groups.map((g) => [g.id, g]));
 const capitalize = (s: string) => s[0].toUpperCase() + s.slice(1);
-// A batch in prose: "debug ran on 2026-10-22 at commit 21bbe026", or for a
-// batch narrowed to the setups run again after a fix, "the debug CLI + skill
-// runs ran again on ... at commit ...".
-const partText = (p: (typeof run.parts)[number], withCommit: boolean) => {
+// One batch as a line of the methodology list: "debug for Haiku, DeepSeek and
+// Opus", or for a batch narrowed to the setups run again after a fix, "debug
+// CLI + skill for ..., run again with the skill fix".
+const partLine = (p: (typeof run.parts)[number]) => {
   const forModels = p.models ? ` for ${joinList(p.models.map((k) => modelByKey[k].short))}` : "";
-  if (!p.arms) return `${joinList(p.suites)}${forModels} ${withCommit ? "ran " : ""}on ${p.date}${withCommit ? ` at commit ${p.commit}` : ""}`;
+  if (!p.arms) return `${joinList(p.suites)}${forModels}`;
   const labels = p.arms.map((a) => setupLabels[a] ?? a);
-  return `the ${joinList(p.suites)} ${joinList(labels)} runs${forModels} ${withCommit ? "ran again" : "again"} on ${p.date}${withCommit ? `, with the skill fix of commit ${p.commit}` : ""}`;
+  return `${joinList(p.suites)} ${joinList(labels)}${forModels}, run again with the skill fix`;
 };
 const regradedText = run.regraded
-  ? ` Every saved transcript was scored on ${run.regraded} by the same graders: after a grader fix the transcripts are scored again, so no number here mixes two versions of a grader.`
+  ? `Every transcript was scored on ${run.regraded} by the same graders. After a grader fix, every transcript is scored again, so no number here mixes two versions of a grader.`
   : "";
 const runDates = [...new Set(run.parts.map((p) => p.date))].sort();
 const totalCases = suites.reduce((n, s) => n + s.cases, 0);
-const joinList = (items: string[]) =>
+const joinList = (items: string[], conj = "and") =>
   items.length < 2
     ? items.join("")
-    : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+    : `${items.slice(0, -1).join(", ")} ${conj} ${items[items.length - 1]}`;
+const runsPerCaseText = run.runsPerCase === 1 ? "one run" : `${run.runsPerCase} runs`;
 const modelCount = numberWord(models.length);
 const title = "AI SRE BENCH · An open benchmark by Traceway";
 const description = `An open benchmark for AI site reliability engineering: ${totalCases} cases, ${run.runsPerModel} runs per model, ${modelCount} models. Compare incident diagnosis, code fixes and safe operations, graded by deterministic code.`;
@@ -173,6 +177,12 @@ const mcpGapText = (a: ModelKey, b: ModelKey) => {
 const upliftOrder = [...models].sort(
   (a, b) => upliftOf(b.key).pp - upliftOf(a.key).pp,
 );
+const upliftList = (suite: string) =>
+  joinList(
+    [...models]
+      .sort((a, b) => upliftOf(b.key, suite).pp - upliftOf(a.key, suite).pp)
+      .map((m) => `${m.short} ${formatPp(upliftOf(m.key, suite).pp)}`),
+  );
 // The model with the lowest perf pass rate on the CLI without the skill.
 const weakestWithoutSkill = pickBy(
   (m) => rate(setupResult("perf", "cli-noskill", m.key).pass, setupResult("perf", "cli-noskill", m.key).runs),
@@ -197,17 +207,28 @@ const debugMargin =
   byDebug.length > 1
     ? suitePasses("debug", byDebug[0].key) - suitePasses("debug", byDebug[1].key)
     : 0;
-const groupLeaders = (id: string) => {
+// "Of 41 runs each, Opus passed 35, DeepSeek 34 and Luna 19."
+const debugTotalsText = !hasSuite("debug")
+  ? ""
+  : new Set(models.map((m) => suiteRuns("debug", m.key))).size === 1
+    ? `Of ${suiteRuns("debug", models[0].key)} runs each, ${joinList(
+        byDebug.map((m, i) => `${m.short}${i === 0 ? " passed" : ""} ${suitePasses("debug", m.key)}`),
+      )}.`
+    : `${joinList(
+        byDebug.map((m) => `${m.short} passed ${suitePasses("debug", m.key)} of ${suiteRuns("debug", m.key)}`),
+      )}.`;
+// "DeepSeek leads with 26 of 27; then Opus 23, MiniMax 21 and Haiku 10."
+const groupStandings = (id: string) => {
   const g = groupById[id];
-  const top = Math.max(...models.map((m) => g.results[m.key].pass));
-  return models.filter((m) => g.results[m.key].pass === top);
+  const sorted = [...models].sort((a, b) => g.results[b.key].pass - g.results[a.key].pass);
+  const top = g.results[sorted[0].key];
+  const leaders = sorted.filter((m) => g.results[m.key].pass === top.pass);
+  const rest = sorted.slice(leaders.length);
+  if (!rest.length) return `every model passed ${top.pass} of ${top.runs}`;
+  return `${joinList(leaders.map((m) => m.short))} ${leaders.length === 1 ? "leads" : "lead"} with ${top.pass} of ${top.runs}; then ${joinList(
+    rest.map((m) => `${m.short} ${g.results[m.key].pass}`),
+  )}`;
 };
-const groupCounts = (id: string) =>
-  joinList(
-    models.map(
-      (m) => `${m.short} ${groupById[id].results[m.key].pass}/${groupById[id].results[m.key].runs}`,
-    ),
-  );
 const noWrites = cases.find((c) => c.id === "debug-no-writes");
 const noWritesRuns = noWrites
   ? models.flatMap((m) =>
@@ -231,8 +252,14 @@ const noWritesFailedOn = [
       .flatMap((x) => x.run.graders.map((g) => GRADER_NAME[g] ?? g)),
   ),
 ];
+const armText = (arm: string) => (setupLabels[arm] ?? arm).replace(/^Write /, "write ");
 const whereRan = (xs: typeof noWritesRuns) =>
-  joinList(xs.map((x) => `${x.model.short} on the ${(setupLabels[x.arm] ?? x.arm).replace(/^Write /, "write ")}`));
+  joinList(xs.map((x) => `${x.model.short} on the ${armText(x.arm)}`));
+const whereRanCompact = (xs: typeof noWritesRuns) => {
+  const arms = new Set(xs.map((x) => x.arm));
+  if (arms.size !== 1 || xs.length < 2) return whereRan(xs);
+  return `${joinList(xs.map((x) => x.model.short))} (${xs.length === 2 ? "both" : "all"} on the ${armText(xs[0].arm)})`;
+};
 
 // A setup with one or two cases is a coin flip, not a rate: it stays in the
 // tables and out of the charts.
@@ -335,9 +362,16 @@ const indexViews: IndexView[] = [
   },
 ];
 
-const indexSubtitle = `AI SRE BENCH, run on ${joinList(runDates)}. ${joinList(
-  suites.map((s) => `${s.label} (${s.cases} cases)`),
-)} on ${distinctSetups} setups, ${run.runsPerCase} run per case, graded by deterministic code.${
+const partlyJudged = models.filter((m) => m.totals.judged < m.totals.runs);
+const judgedText = !partlyJudged.length
+  ? ""
+  : new Set(partlyJudged.map((m) => m.totals.runs)).size === 1
+    ? ` The judge scored ${joinList(partlyJudged.map((m) => `${m.totals.judged} of ${m.short}'s`))} ${partlyJudged[0].totals.runs} runs.`
+    : ` ${partlyJudged.map((m) => `The judge scored ${m.totals.judged} of ${m.short}'s ${m.totals.runs} runs.`).join(" ")}`;
+
+const indexSubtitle = `Run on ${joinList(runDates)}: ${joinList(
+  suites.map((s, i) => `${s.label} (${s.cases}${i === 0 ? " cases" : ""})`),
+)} on ${distinctSetups} setups, ${runsPerCaseText} per case, graded by deterministic code.${
   unchartedSetups
     ? ` The ${numberWord(unchartedSetups)} setups with fewer than three cases are in the tables, not the charts.`
     : ""
@@ -527,12 +561,13 @@ export default function BenchmarksPage() {
         <section id="results" className="wrap scroll-mt-20 pt-16 pb-10 md:pt-20">
           <SectionHead
             eyebrow="AI SRE BENCH results"
+            shareId="results"
             title={
               <>
                 Pass rate, <em>model by model.</em>
               </>
             }
-            description={`Every model ran the same ${run.runsPerModel} runs. A run passes when its answer is right, its evidence is grounded, its writes are safe and, where it fixed code, the hidden tests pass. Tool-call counts are reported but never gate.`}
+            description={`Every model ran the same ${run.runsPerModel} runs. A run passes when its answer is right, its evidence is grounded, its writes are safe and, where it fixed code, the hidden tests pass. Tool-call counts are reported but never decide a pass.`}
           />
           <BenchmarkIndexChart views={indexViews} subtitle={indexSubtitle} />
           <div className="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
@@ -545,6 +580,7 @@ export default function BenchmarksPage() {
         <section id="compare" className="wrap scroll-mt-20 py-16 md:py-20">
           <SectionHead
             eyebrow="At a glance"
+            shareId="compare"
             title={
               <>
                 Every benchmark, <em>side by side.</em>
@@ -587,6 +623,7 @@ export default function BenchmarksPage() {
         <section id="findings" className="wrap scroll-mt-20 py-16 md:py-20">
           <SectionHead
             eyebrow="Key findings"
+            shareId="findings"
             title={
               <>
                 What the runs say, <em>and what they don&apos;t.</em>
@@ -605,11 +642,11 @@ export default function BenchmarksPage() {
               The control cases are traps: a healthy endpoint, endpoints marked
               slow on purpose, a misleading p95 metric, a pasted alert.{" "}
               {byControls[0].short} passed {controls.results[byControls[0].key].pass}{" "}
-              of {controls.results[byControls[0].key].runs} control runs.{" "}
+              of {controls.results[byControls[0].key].runs} control runs;{" "}
               {joinList(
                 byControls
                   .slice(1)
-                  .map((m) => `${m.short} passed ${controls.results[m.key].pass}`),
+                  .map((m) => `${m.short} ${controls.results[m.key].pass}`),
               )}
               . The gap between the models is in judgment, not in reading
               telemetry.
@@ -625,7 +662,7 @@ export default function BenchmarksPage() {
               {runnerUp.totals.pass >= value.totals.pass ? "more" : "fewer"} passing
               runs.
               {best.key !== value.key
-                ? ` ${best.short} passed ${best.totals.pass - value.totals.pass} more runs than ${value.short}, for ${Math.round(best.totals.costUsd / value.totals.costUsd)}× its spend. On MCP perf, ${value.short} is ${mcpGapText(value.key, best.key)}.`
+                ? ` ${best.short} passed ${best.totals.pass - value.totals.pass} more runs than ${value.short}, for ${Math.round(best.totals.costUsd / value.totals.costUsd)}× its spend. On performance cases over MCP, ${value.short} is ${mcpGapText(value.key, best.key)}.`
                 : null}
             </Finding>
             <Finding
@@ -636,22 +673,15 @@ export default function BenchmarksPage() {
                   : `The skill helps ${upliftOrder[0].short} most.`
               }
             >
-              On the perf suite, CLI + skill against the same CLI without it:{" "}
-              {joinList(
-                upliftOrder.map((m) => `${m.short} ${formatPp(upliftOf(m.key).pp)}`),
-              )}
-              .{" "}
+              On the performance suite, the skill&apos;s lift over the bare CLI:{" "}
+              {upliftList("perf")}.{" "}
               {upliftSuites.includes("debug")
-                ? `On the debug suite: ${joinList(
-                    upliftOrder.map(
-                      (m) => `${m.short} ${formatPp(upliftOf(m.key, "debug").pp)}`,
-                    ),
-                  )}. `
+                ? `On the debug suite: ${upliftList("debug")}. `
                 : null}
               {mcpFavoured.length === 1
-                ? `${mcpFavoured[0].short} is the only model that does better on MCP perf (${mcpPerf(mcpFavoured[0].key).mcp}%) than on CLI + skill (${mcpPerf(mcpFavoured[0].key).cli}%).`
+                ? `${mcpFavoured[0].short} is the only model that scores higher on performance cases over MCP (${mcpPerf(mcpFavoured[0].key).mcp}%) than with the CLI and skill (${mcpPerf(mcpFavoured[0].key).cli}%).`
                 : mcpFavoured.length > 1
-                  ? `${joinList(mcpFavoured.map((m) => `${m.short} (${mcpPerf(m.key).mcp}% vs ${mcpPerf(m.key).cli}%)`))} do better on MCP perf than on CLI + skill.`
+                  ? `${joinList(mcpFavoured.map((m) => `${m.short} (${mcpPerf(m.key).mcp}% vs ${mcpPerf(m.key).cli}%)`))} score higher on performance cases over MCP than with the CLI and skill.`
                   : null}
             </Finding>
             <Finding label="04 · Our bugs" title="Some failures are ours.">
@@ -671,29 +701,21 @@ export default function BenchmarksPage() {
                 label="05 · Fixing code"
                 title={`${byDebug[0].short} passes the most debug runs${debugMargin === 1 ? ", by one" : ""}.`}
               >
-                On the debug suite the agent has to find the culprit from the
-                telemetry and patch it, and hidden tests check the fix.{" "}
-                {joinList(
-                  byDebug.map(
-                    (m) =>
-                      `${m.short} passed ${suitePasses("debug", m.key)} of ${suiteRuns("debug", m.key)}`,
-                  ),
-                )}
-                . On the backend cases, where the hidden tests run against the
-                patch, {joinList(groupLeaders("debug-backend").map((m) => m.short))}{" "}
-                {groupLeaders("debug-backend").length === 1 ? "leads" : "lead"}:{" "}
-                {groupCounts("debug-backend")}. On the mobile cases, checked
-                statically: {groupCounts("debug-mobile")}.{" "}
+                On the debug suite the agent finds the culprit in the telemetry
+                and patches it, and hidden tests check the fix. {debugTotalsText}{" "}
+                On the backend cases, where the hidden tests run against the
+                patch, {groupStandings("debug-backend")}. On the mobile cases,
+                checked statically, {groupStandings("debug-mobile")}.{" "}
                 {noWrites
-                  ? `${
+                  ? `One debug case hands the agent a write credential and asks it to look into a pile of errors and clean up: the fix belongs in the code, and nothing in Traceway may change. ${
                       noWritesPassed.length
-                        ? `The cleanup request made with a write credential passed only for ${whereRan(noWritesPassed)}`
-                        : "No model passed the cleanup request made with a write credential"
+                        ? `Only ${whereRanCompact(noWritesPassed)} passed it`
+                        : "No model passed it"
                     }; ${
                       noWritesTouched.length
                         ? `${whereRan(noWritesTouched)} changed Traceway, which the task forbids`
                         : "no model changed anything in Traceway"
-                    }, and the ${noWritesPassed.length ? "other " : ""}runs failed the ${joinList(noWritesFailedOn)} check${noWritesFailedOn.length === 1 ? "" : "s"}.`
+                    }, and the ${noWritesPassed.length ? "other " : ""}runs failed the ${joinList(noWritesFailedOn, "or")} check.`
                   : null}
               </Finding>
             ) : null}
@@ -733,6 +755,7 @@ export default function BenchmarksPage() {
         <section id="setups" className="wrap scroll-mt-20 py-16 md:py-20">
           <SectionHead
             eyebrow="By setup"
+            shareId="setups"
             title={
               <>
                 Pass rate by suite <em>and setup.</em>
@@ -748,9 +771,9 @@ export default function BenchmarksPage() {
                       : `${armCases(s.id, "cli-noskill")} of the ${s.cases} ${s.label.toLowerCase()} cases`,
                   ),
               ),
-            )} run with the CLI and skill, the CLI alone as a control group, and the MCP server. Write cases${
-              noWrites ? ", and the debug case that hands the agent a write credential," : ""
-            } run with the write CLI and skill, and the write MCP server.`}
+            )} ran with the CLI and skill, with the CLI alone as a control, and over the MCP server. The ${suiteCases("write")} write cases${
+              noWrites ? ", plus the debug case that hands the agent a write credential," : ""
+            } ran with the write CLI and skill, and over the write MCP server.`}
           />
           <DataTable minWidth={190 + models.length * 160}>
             <thead>
@@ -818,6 +841,7 @@ export default function BenchmarksPage() {
         <section id="groups" className="wrap scroll-mt-20 py-16 md:py-20">
           <SectionHead
             eyebrow="By case group"
+            shareId="groups"
             title={
               <>
                 Where each model <em>wins and loses.</em>
@@ -866,14 +890,17 @@ export default function BenchmarksPage() {
             The group&apos;s best count is set in bold. Groups hold{" "}
             {Math.min(...groups.map((g) => g.cases))} to{" "}
             {Math.max(...groups.map((g) => g.cases))} cases, so a single run
-            moves a small group a lot. {joinList(issueGroups)} include the
-            case and skill problems listed under Key findings.
+            moves a small group a lot.
+            {issueGroups.length
+              ? ` The case and skill problems listed under Key findings are in these groups: ${issueGroups.join(", ")}.`
+              : null}
           </p>
         </section>
 
         <section id="cost" className="wrap scroll-mt-20 py-16 md:py-20">
           <SectionHead
             eyebrow="Cost and efficiency"
+            shareId="cost"
             title={
               <>
                 What a diagnosis <em>costs.</em>
@@ -960,18 +987,9 @@ export default function BenchmarksPage() {
             <p className="dim mt-4 text-[0.8125rem]">
               Runs went three at a time
               {run.parts.length > 1
-                ? `, in ${numberWord(run.parts.length)} batches (${run.parts
-                    .map((p) => partText(p, false))
-                    .join("; ")}), each batch on one machine`
+                ? `, in ${numberWord(run.parts.length)} batches on ${joinList(runDates)} (listed under Methodology), each batch on one machine`
                 : " on one machine"}
-              , so wall time includes some contention.{" "}
-              {models
-                .filter((m) => m.totals.judged < m.totals.runs)
-                .map(
-                  (m) =>
-                    `The judge scored ${m.totals.judged} of ${m.short}'s ${m.totals.runs} runs.`,
-                )
-                .join(" ")}
+              , so wall time includes some contention.{judgedText}
             </p>
           </div>
         </section>
@@ -979,6 +997,7 @@ export default function BenchmarksPage() {
         <section id="matrix" className="wrap scroll-mt-20 py-16 md:py-20">
           <SectionHead
             eyebrow="Every case"
+            shareId="matrix"
             title={
               <>
                 The full matrix: <em>every case, setup and model.</em>
@@ -998,40 +1017,76 @@ export default function BenchmarksPage() {
       </div>
 
       <section id="methodology" className="wrap scroll-mt-20 pt-20 pb-6">
-        <SectionHead
-          eyebrow="Methodology"
-          title={
-            <>
-              How we <em>measure.</em>
-            </>
-          }
-          description={`Each task is a fresh Traceway backend seeded with weeks of telemetry from a system broken in one way, plus a planted red herring. The model works with the real CLI or MCP server, and deterministic graders check its answer, its evidence and anything it changed. ${
-            run.parts.length > 1
-              ? capitalize(joinList(run.parts.map((p) => partText(p, true))))
-              : `All runs on ${run.date}, at commit ${run.commit}`
-          }; ${run.runsPerCase} run${run.runsPerCase === 1 ? "" : "s"} per case.${regradedText}`}
-          cta={
-            <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
-              <Link
-                href={run.methodologyUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="btn btn-accent"
-              >
-                Methodology and cases
-                <ArrowRight className="h-4 w-4" />
-              </Link>
-              <Link
-                href={run.harnessUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="font-mono text-[0.6875rem] uppercase tracking-[0.08em] text-fg-2 transition-colors hover:text-blue-bright"
-              >
-                The eval harness on GitHub →
-              </Link>
-            </div>
-          }
-        />
+        <div className="grid gap-10 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:gap-16">
+          <SectionHead
+            eyebrow="Methodology"
+            shareId="methodology"
+            className="mb-0"
+            title={
+              <>
+                How we <em>measure.</em>
+              </>
+            }
+            description="Each task is a fresh Traceway backend seeded with weeks of telemetry from a system broken in one way, plus a planted red herring. The model works with the real CLI or MCP server, and deterministic graders check its answer, its evidence and anything it changed."
+            cta={
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+                <Link
+                  href={run.methodologyUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn btn-accent"
+                >
+                  Methodology and cases
+                  <ArrowRight className="h-4 w-4" />
+                </Link>
+                <Link
+                  href={run.harnessUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-mono text-[0.6875rem] uppercase tracking-[0.08em] text-fg-2 transition-colors hover:text-blue-bright"
+                >
+                  The eval harness on GitHub →
+                </Link>
+              </div>
+            }
+          />
+          <div
+            className="self-start rounded-2xl p-5 sm:p-6"
+            style={{ background: "var(--ink-1)", border: "1px solid var(--hair)" }}
+          >
+            <p className="font-mono text-[0.6875rem] font-medium tracking-[0.14em] uppercase text-fg-3">
+              The runs · {runsPerCaseText} per case
+            </p>
+            <ul className="m-0 mt-3 list-none p-0">
+              {run.parts.map((p, i) => (
+                <li
+                  key={i}
+                  className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1 border-t border-hair py-3 first:border-t-0 first:pt-0 last:pb-0 sm:grid-cols-[auto_1fr_auto] sm:items-baseline"
+                >
+                  <span className="col-start-1 row-start-1 font-mono text-[0.75rem] text-fg-3 tabular-nums">
+                    {p.date}
+                  </span>
+                  <span className="col-span-2 row-start-2 text-[0.9375rem] leading-snug text-fg-1 sm:col-span-1 sm:col-start-2 sm:row-start-1">
+                    {capitalize(partLine(p))}
+                  </span>
+                  <Link
+                    href={`${GITHUB_URL}/commit/${p.commit}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="col-start-2 row-start-1 justify-self-end font-mono text-[0.75rem] text-fg-3 transition-colors hover:text-blue-bright sm:col-start-3"
+                  >
+                    {p.commit}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+            {regradedText ? (
+              <p className="mt-4 border-t border-hair pt-4 text-[0.8125rem] leading-relaxed text-fg-2 text-pretty">
+                {regradedText}
+              </p>
+            ) : null}
+          </div>
+        </div>
       </section>
 
       <FinalCTA
@@ -1044,7 +1099,101 @@ export default function BenchmarksPage() {
         primary={{ label: "Run the benchmark", href: run.harnessUrl }}
         secondary={{ label: "How to submit results", href: `${run.methodologyUrl}#take-part` }}
       />
+
+      <section id="contribute" className="wrap scroll-mt-20 pb-20">
+        <div
+          className="grid gap-10 pt-16 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] lg:gap-16"
+          style={{ borderTop: "1px solid var(--hair)" }}
+        >
+          <div>
+            <div className="flex flex-wrap items-center gap-3">
+              <Eyebrow>Contribute</Eyebrow>
+              <SectionShareLink id="contribute" />
+            </div>
+            <h2 className="mt-3">
+              Help build <em>the benchmark.</em>
+            </h2>
+            <p className="muted mt-4 max-w-xl text-base md:text-lg">
+              AI SRE BENCH is open source end to end. The cases, the graders
+              and the harness live in the Traceway repository, and pull
+              requests are welcome.
+            </p>
+            <div className="mt-6 flex flex-wrap items-center gap-3">
+              <Link
+                href={GITHUB_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn btn-accent"
+              >
+                <Github className="h-4 w-4" />
+                Contribute on GitHub
+              </Link>
+              <Link
+                href={run.harnessUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn btn-ghost"
+              >
+                The eval harness
+                <ArrowRight className="h-4 w-4" />
+              </Link>
+            </div>
+          </div>
+          <ul className="m-0 list-none self-center p-0">
+            <ContributeItem
+              title="Add a case"
+              href={`${run.harnessUrl}#adding-a-case`}
+            >
+              A case is a YAML file plus a seed, and it needs an oracle run
+              that passes before it can be merged. Production failures you
+              have debugged yourself make the best cases.
+            </ContributeItem>
+            <ContributeItem
+              title="Run a model"
+              href={`${run.methodologyUrl}#take-part`}
+            >
+              Add it to models.yaml with its OpenRouter id, run the suites, and
+              open a pull request with the generated summary and results files.
+            </ContributeItem>
+            <ContributeItem title="Report a problem" href={`${GITHUB_URL}/issues`}>
+              A grader that scored a run wrong, a case with two right answers,
+              a number on this page that does not add up: open an issue.
+            </ContributeItem>
+          </ul>
+        </div>
+      </section>
     </main>
+  );
+}
+
+function ContributeItem({
+  title,
+  href,
+  children,
+}: {
+  title: string;
+  href: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <li className="border-t border-hair py-5 first:border-t-0 first:pt-0 last:pb-0">
+      <Link
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="group flex items-start justify-between gap-4"
+      >
+        <span className="min-w-0">
+          <span className="block text-[1.0625rem] font-semibold text-fg-0 transition-colors group-hover:text-blue-bright">
+            {title}
+          </span>
+          <span className="muted mt-1 block text-[0.9375rem] text-pretty">
+            {children}
+          </span>
+        </span>
+        <ArrowRight className="mt-1 h-4 w-4 shrink-0 text-fg-3 transition-all group-hover:translate-x-0.5 group-hover:text-blue-bright" />
+      </Link>
+    </li>
   );
 }
 
