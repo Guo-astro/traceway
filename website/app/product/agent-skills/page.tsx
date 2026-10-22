@@ -99,7 +99,7 @@ export default function AgentSkillsPage() {
                 href="/benchmarks"
                 className="text-fg-2 hover:text-blue-bright transition-colors"
               >
-                See the benchmarks →
+                Explore AI SRE BENCH →
               </Link>
             </p>
           </div>

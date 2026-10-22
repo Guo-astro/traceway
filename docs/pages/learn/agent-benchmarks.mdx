@@ -1,12 +1,14 @@
-# Agent Benchmarks
+# AI SRE BENCH
 
 import { Callout } from "nextra/components";
+
+AI SRE BENCH is Traceway's open benchmark for AI site reliability engineering. It measures how well models diagnose incidents, fix code and carry out operational tasks with real observability tools. This page documents the methodology and test cases; [view the results](https://tracewayapp.com/benchmarks) to compare models.
 
 ## Bring your own AI
 
 Traceway has a strict bring-your-own-AI policy. We don't ship a model, pick one for you, or send your data to an AI vendor on your behalf, and every Traceway instance works without any LLM configured. You use the AI you already trust, under your own account, and Traceway gives it the tools: an [agent skill](https://github.com/tracewayapp/traceway/tree/main/skills/traceway) for the [CLI](/learn/cli) and an [MCP server](/learn/mcp).
 
-That raises a fair question: which models actually do well with those tools? This page exists to answer it in the open. Our eval harness, in the repository at [`cli/test/evals`](https://github.com/tracewayapp/traceway/tree/main/cli/test/evals), hands models the kind of production problems an on-call engineer gets and grades what they do. Below is how it works and every case it runs. The results are on the [benchmarks page](https://tracewayapp.com/benchmarks). They also show us where our own skill and MCP server fall short.
+That raises a fair question: which models actually do well with those tools? AI SRE BENCH exists to answer it in the open. Our eval harness, in the repository at [`cli/test/evals`](https://github.com/tracewayapp/traceway/tree/main/cli/test/evals), hands models the kind of production problems an on-call engineer gets and grades what they do. Below is how it works and every case it runs. The results also show us where our own skill and MCP server fall short.
 
 ### Take part
 
@@ -14,6 +16,8 @@ The harness is open source, and we welcome help in two ways:
 
 - **Benchmark a new model.** Add it to `cli/test/evals/models.yaml` with an exact OpenRouter model id and the same settings as the other models, run the suites ([Run it yourself](#run-it-yourself)), and open a pull request with the generated `summary.md` and `results.json`.
 - **Add a test case.** A case is a YAML file plus a seed, and it needs an oracle that passes before it can be merged. The harness [README](https://github.com/tracewayapp/traceway/tree/main/cli/test/evals#adding-a-case) explains the format. Production failures you have debugged yourself make the best cases.
+
+When sharing an AI SRE BENCH score, link to the [results](https://tracewayapp.com/benchmarks) and include the exact model version, suite, setup and run date. Keep those details alongside the score so readers can compare like for like.
 
 <Callout type="info">
 The published results are local runs with one run per case, so any single case × setup cell is noisy. Trust the suite-level rates more than any one cell. Failures caused by our own cases or skill count as failures too; the benchmarks page lists the known ones.
@@ -29,7 +33,7 @@ Every model call goes through [OpenRouter](https://openrouter.ai), with one API 
 
 ## Where the results are
 
-This page explains how we measure. The results live on the [benchmarks page](https://tracewayapp.com/benchmarks): pass rates per model, suite and setup, what the runs cost, and every case's outcome for every model.
+This page explains how we measure. The results live on [AI SRE BENCH](https://tracewayapp.com/benchmarks): pass rates per model, suite and setup, what the runs cost, and every case's outcome for every model.
 
 ## What one run is
 

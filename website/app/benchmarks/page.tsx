@@ -60,10 +60,33 @@ const joinList = (items: string[]) =>
     ? items.join("")
     : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
 const modelCount = numberWord(models.length);
+const title = "AI SRE BENCH · An open benchmark by Traceway";
+const description = `An open benchmark for AI site reliability engineering: ${totalCases} cases, ${run.runsPerModel} runs per model, ${modelCount} models. Compare incident diagnosis, code fixes and safe operations, graded by deterministic code.`;
+const shareImage = {
+  url: "/benchmarks/ai-sre-bench.png",
+  width: 1200,
+  height: 630,
+  alt: "AI SRE BENCH by Traceway. An open benchmark for AI site reliability engineering.",
+};
 
 export const metadata: Metadata = {
-  title: "Traceway AI Benchmarks",
-  description: `How well do AI agents debug production with Traceway? ${totalCases} seeded production failures, ${run.runsPerModel} runs per model, ${modelCount} models (${models.map((m) => m.label).join(", ")}), graded by deterministic code. Pass rates, costs and every case.`,
+  title,
+  description,
+  alternates: { canonical: "/benchmarks" },
+  openGraph: {
+    title,
+    description,
+    url: "/benchmarks",
+    siteName: "Traceway",
+    type: "website",
+    images: [shareImage],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title,
+    description,
+    images: [shareImage],
+  },
 };
 
 const CARD_STYLE = {
@@ -312,7 +335,7 @@ const indexViews: IndexView[] = [
   },
 ];
 
-const indexSubtitle = `Traceway agent evals, run on ${joinList(runDates)}. ${joinList(
+const indexSubtitle = `AI SRE BENCH, run on ${joinList(runDates)}. ${joinList(
   suites.map((s) => `${s.label} (${s.cases} cases)`),
 )} on ${distinctSetups} setups, ${run.runsPerCase} run per case, graded by deterministic code.${
   unchartedSetups
@@ -457,17 +480,23 @@ export default function BenchmarksPage() {
         <AuroraBackground variant="hero" />
         <div className="wrap relative z-10">
           <div className="flex flex-col items-center text-center">
-            <h1 className="max-w-[24ch]">
-              Traceway <em>AI Benchmarks</em>
+            <p className="mb-5 font-mono text-[0.6875rem] uppercase tracking-[0.18em] text-fg-2">
+              An open benchmark by Traceway
+            </p>
+            <h1 style={{ fontSize: "clamp(34px, 7vw, 80px)", letterSpacing: "-0.05em" }}>
+              AI SRE <span className="text-a2">BENCH</span>
             </h1>
             <p className="hero-sub text-pretty" style={{ maxWidth: 720 }}>
-              We believe you should bring your own AI. Traceway isn&apos;t here
-              to sell you an agent. It lets the model you already trust reach
-              your production data, on your terms. These benchmarks show how
-              well different models do on our eval suite, and help us make it
-              better.
+              How well can AI agents do the work of a site reliability engineer?
+              Compare models on incident diagnosis, code fixes and safe operations
+              using seeded production scenarios and real Traceway tools.
+              Open-source cases. Deterministic grading. Every result published.
             </p>
             <div className="hero-cta-row justify-center">
+              <Link href="#results" className="btn btn-accent">
+                View results
+                <ArrowRight className="h-4 w-4" />
+              </Link>
               <Link
                 href={run.methodologyUrl}
                 target="_blank"
@@ -497,7 +526,7 @@ export default function BenchmarksPage() {
       <div className="band-light">
         <section id="results" className="wrap scroll-mt-20 pt-16 pb-10 md:pt-20">
           <SectionHead
-            eyebrow="Headline"
+            eyebrow="AI SRE BENCH results"
             title={
               <>
                 Pass rate, <em>model by model.</em>
@@ -1008,12 +1037,12 @@ export default function BenchmarksPage() {
       <FinalCTA
         title={
           <>
-            Give your agent <em>production context.</em>
+            Put your model <em>on the bench.</em>
           </>
         }
-        description="Install the skill or connect the MCP server, and let your agent take the next slow endpoint or the next crash."
-        primary={{ label: "Explore Agent Skills", href: "/product/agent-skills" }}
-        secondary={{ label: "See the MCP server", href: "/product/mcp" }}
+        description="Building a model? Run AI SRE BENCH with the open-source harness and submit your results. When sharing a score, include the model version, suite, setup and run date so others can compare it."
+        primary={{ label: "Run the benchmark", href: run.harnessUrl }}
+        secondary={{ label: "How to submit results", href: `${run.methodologyUrl}#take-part` }}
       />
     </main>
   );

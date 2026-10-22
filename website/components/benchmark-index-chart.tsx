@@ -151,10 +151,11 @@ export function BenchmarkIndexChart({
               </span>
             ))}
           </div>
-          <span className="inline-flex items-center gap-1.5 text-[1.0625rem] font-semibold tracking-[-0.01em] text-fg-1">
+          <span className="inline-flex items-center gap-2 text-fg-1">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src="/favicon.svg" alt="" className="h-4 w-4" />
-            Traceway
+            <span className="font-semibold tracking-[-0.01em]">AI SRE BENCH</span>
+            <span className="text-[0.75rem] text-fg-2">by Traceway</span>
           </span>
         </div>
 

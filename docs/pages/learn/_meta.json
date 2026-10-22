@@ -26,7 +26,7 @@
   "cli-auth": "CLI Authentication",
   "mcp": "MCP Server",
   "agent-write-access": "Agent Write Access",
-  "agent-benchmarks": "Agent Benchmarks",
+  "agent-benchmarks": "AI SRE BENCH",
   "embedded-mode": "Embedded Mode",
   "otel-agent": "OTel Agent",
   "kubernetes": "Kubernetes",
