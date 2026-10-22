@@ -493,7 +493,7 @@
 						font-size="10"
 					>
 						{formatYLabel(tick)}{unitOnTopTick && __index === yTickItems().length - 1
-							? ` ${yAxisUnit()}` 
+							? ` ${yAxisUnit()}`
 							: ''}
 					</text>
 				{/each}
