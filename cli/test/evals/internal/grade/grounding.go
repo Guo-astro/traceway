@@ -13,11 +13,13 @@ import (
 )
 
 // Grounding checks that the evidence is real:
-//   - every evidence.call_id names a call that exists, succeeded and was
-//     not truncated (a shell call succeeded when one of its operations did,
-//     even if a later command in it, such as jq, failed);
+//   - every evidence.call_id names a call that exists and succeeded (a shell
+//     call succeeded when one of its operations did, even if a later command
+//     in it, such as jq, failed);
 //   - every grounding key appears in the output of at least one cited call
-//     (what the model saw, or the raw traceway output inside that call);
+//     (what the model saw, or the raw traceway output inside that call). A
+//     call whose output was cut at the cap is evidence for the part the
+//     model saw, and for nothing past the cut;
 //   - every UUID, 32-hex trace id or 16-hex hash in the answer appears in
 //     some tool output or the prompt: no invented ids.
 func Grounding(in *Input) *Verdict {
@@ -29,6 +31,7 @@ func Grounding(in *Input) *Verdict {
 		return v
 	}
 	var cited []*record.Call
+	visibleOnly := map[*record.Call]bool{}
 	if ev, ok := sub["evidence"].([]any); ok {
 		for i, e := range ev {
 			m, _ := e.(map[string]any)
@@ -42,7 +45,9 @@ func Grounding(in *Input) *Verdict {
 			case !anyOpOK(c) || (len(c.Ops) == 0 && !c.OK && !grepFoundNothing(c)):
 				v.fail("evidence[%d] cites %s, which failed", i, id)
 			case c.Truncated:
-				v.fail("evidence[%d] cites %s, whose output was truncated", i, id)
+				v.note("evidence[%d] cites %s, whose output was truncated; only the part the model saw counts", i, id)
+				visibleOnly[c] = true
+				cited = append(cited, c)
 			default:
 				cited = append(cited, c)
 			}
@@ -53,7 +58,7 @@ func Grounding(in *Input) *Verdict {
 	for _, key := range in.Case.Expect.Grounding {
 		found := false
 		for _, c := range cited {
-			if callContains(c, key) {
+			if visibleOnly[c] && strings.Contains(unescapeJSON(c.Output), key) || !visibleOnly[c] && callContains(c, key) {
 				found = true
 				break
 			}

@@ -106,6 +106,27 @@ func All(ctx context.Context, in *Input) []*Verdict {
 	return out
 }
 
+// Offline runs the graders that need only the run record: answer,
+// trajectory, efficiency, grounding and report. The state, hidden-test and
+// judge verdicts need the run's instance, workspace or a model, so a regrade
+// keeps the recorded ones.
+func Offline(in *Input) []*Verdict {
+	var out []*Verdict
+	if in.Case.Expect.Answer != nil {
+		out = append(out, Answer(in))
+	}
+	if in.Case.Expect.Calls != nil {
+		out = append(out, Trajectory(in.Run, in.Case.Expect.Calls), Efficiency(in.Run, in.Case.Expect.Calls))
+	}
+	if in.Case.Suite == "perf" || in.Case.Suite == "debug" || len(in.Case.Expect.Grounding) > 0 {
+		out = append(out, Grounding(in))
+	}
+	if in.Case.Expect.Report != nil {
+		out = append(out, Report(in))
+	}
+	return out
+}
+
 // Passed reports whether every gating grader passed.
 func Passed(vs []*Verdict) bool {
 	for _, v := range vs {

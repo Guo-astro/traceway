@@ -41,6 +41,17 @@ const setupLabels = Object.fromEntries(setups.map((s) => [s.arm, s.label]));
 const suiteLabel = Object.fromEntries(suites.map((s) => [s.id, s.label]));
 const groupById = Object.fromEntries(groups.map((g) => [g.id, g]));
 const capitalize = (s: string) => s[0].toUpperCase() + s.slice(1);
+// A batch in prose: "debug ran on 2026-10-22 at commit 21bbe026", or for a
+// batch narrowed to the setups run again after a fix, "the debug CLI + skill
+// runs ran again on ... at commit ...".
+const partText = (p: (typeof run.parts)[number], withCommit: boolean) => {
+  if (!p.arms) return `${joinList(p.suites)} ${withCommit ? "ran " : ""}on ${p.date}${withCommit ? ` at commit ${p.commit}` : ""}`;
+  const labels = p.arms.map((a) => setupLabels[a] ?? a);
+  return `the ${joinList(p.suites)} ${joinList(labels)} runs ${withCommit ? "ran again" : "again"} on ${p.date}${withCommit ? `, with the skill fix on top of commit ${p.commit}` : ""}`;
+};
+const regradedText = run.regraded
+  ? ` Every run was scored by the graders as they stood on ${run.regraded}: after a grader fix the saved transcripts are re-scored, so no number here compares two graders.`
+  : "";
 const joinList = (items: string[]) =>
   items.length < 2
     ? items.join("")
@@ -835,7 +846,7 @@ export default function BenchmarksPage() {
               Runs went three at a time on one machine
               {run.parts.length > 1
                 ? `, in ${numberWord(run.parts.length)} batches (${run.parts
-                    .map((p) => `${joinList(p.suites)} on ${p.date}`)
+                    .map((p) => partText(p, false))
                     .join("; ")})`
                 : ""}
               , so wall time includes some contention.{" "}
@@ -881,14 +892,9 @@ export default function BenchmarksPage() {
           }
           description={`Each task is a fresh Traceway backend seeded with weeks of telemetry from a system broken in one way, plus a planted red herring. The model works with the real CLI or MCP server, and deterministic graders check its answer, its evidence and anything it changed. ${
             run.parts.length > 1
-              ? run.parts
-                  .map(
-                    (p) =>
-                      `${capitalize(joinList(p.suites))} ran on ${p.date} at commit ${p.commit}`,
-                  )
-                  .join("; ")
+              ? run.parts.map((p) => capitalize(partText(p, true))).join("; ")
               : `All runs on ${run.date}, at commit ${run.commit}`
-          }, ${run.runsPerCase} run per case.`}
+          }, ${run.runsPerCase} run per case.${regradedText}`}
           cta={
             <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
               <Link

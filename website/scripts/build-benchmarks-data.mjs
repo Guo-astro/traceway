@@ -282,36 +282,8 @@ const KNOWN_ISSUES = [
     case: "perf-net-chatty-fanout",
     title: "The fan-out case fails grounding for every model",
     detail:
-      "Every model fails this case's grounding check on most setups, mostly because the output it cites was truncated.",
+      "Every model fails this case's grounding check on most setups: the case wants the two fanned-out routes, GET /stock/{sku} and GET /prices/{sku}, in the output of a cited call, and the models cite the aggregate view that shows the fan-out without those route names.",
     matches: (r) => r.graders.includes("grounding"),
-  },
-  {
-    id: "debug-issue-hash-optional",
-    kind: "harness",
-    case: "debug-*",
-    title: "The debug answer schema calls the issue hash optional, the grader does not",
-    detail:
-      "The submit tool describes issue_hash as the group hash \"if the bug has one\" and does not require it, so a model may leave it out even when it has quoted the hash in its evidence. The answer grader fails the run on that empty field alone, whatever the diagnosis and the fix.",
-    matches: (r) => r.firstFailure.includes('issue_hash ""'),
-  },
-  {
-    id: "debug-exceptions-show-truncated",
-    kind: "skill",
-    case: "debug-*",
-    title: "The first command the skill recommends is too long to cite",
-    detail:
-      "The skill opens a debug task with traceway exceptions show <hash>, and for these groups its output (JSON or not, with or without head) runs past the 30,000 characters the sandbox shell returns. The grounding grader rejects any evidence that cites a truncated call, so a run that read the right stack trace there and fixed the bug still fails.",
-    matches: (r) =>
-      r.graders.includes("grounding") && r.firstFailure.includes("whose output was truncated"),
-  },
-  {
-    id: "debug-culprit-line-after-patch",
-    kind: "harness",
-    case: "debug-*",
-    title: "Culprit lines are graded against the file before the patch",
-    detail:
-      "The submit schema asks for the culprit's line number without saying which version of the file. A model that inserts a guard or a comment above the faulty statement and then reports where that statement now sits lands outside the grader's tolerance of a few lines, even when the hidden tests pass on its fix.",
-    matches: (r) => /\bculprit\.line [1-9]\d*, want \d+±\d+$/.test(r.firstFailure),
   },
 ];
 
@@ -340,22 +312,43 @@ function parseArgs(argv) {
 
 // A part is one batch of runs: `--part perf,write:3b00b083:2026-10-21`. A
 // merged results.json keeps only its first part's commit and date, so the
-// batches are named on the command line and written into the page.
-function parseParts(values, suites, header) {
+// batches are named on the command line and written into the page. A part
+// may be narrowed to the setups that were run again after a fix:
+// `--part debug@cli+skill:1a2b3c4d:2026-10-22` says the debug suite's
+// cli+skill runs come from that later batch, and the suite's other setups
+// from the part that names the suite alone.
+function parseParts(values, suites, header, runs) {
   if (!values) return [{ suites: suites.map((s) => s.id), commit: header.gitSha.slice(0, 8), date: header.started.slice(0, 10) }];
   const parts = values.map((v) => {
-    const m = v.match(/^([\w,-]+):([0-9a-f]{7,40}):(\d{4}-\d{2}-\d{2})$/);
-    if (!m) throw new Error(`--part ${v}: want <suites>:<commit>:<YYYY-MM-DD>`);
-    return { suites: m[1].split(","), commit: m[2].slice(0, 8), date: m[3] };
+    const m = v.match(/^([\w,-]+)(?:@([\w+,-]+))?:([0-9a-f]{7,40}):(\d{4}-\d{2}-\d{2})$/);
+    if (!m) throw new Error(`--part ${v}: want <suites>[@<arms>]:<commit>:<YYYY-MM-DD>`);
+    const part = { suites: m[1].split(",") };
+    if (m[2]) part.arms = m[2].split(",");
+    part.commit = m[3].slice(0, 8);
+    part.date = m[4];
+    return part;
   });
   for (const s of suites) {
-    const owners = parts.filter((p) => p.suites.includes(s.id));
-    if (owners.length !== 1) throw new Error(`suite ${s.id} must be in exactly one --part, found ${owners.length}`);
+    const owners = parts.filter((p) => !p.arms && p.suites.includes(s.id));
+    if (owners.length !== 1) throw new Error(`suite ${s.id} must be in exactly one --part without arms, found ${owners.length}`);
   }
   for (const p of parts)
-    for (const id of p.suites)
+    for (const id of p.suites) {
       if (!suites.some((s) => s.id === id)) throw new Error(`--part names suite ${id}, which has no runs`);
+      for (const arm of p.arms ?? [])
+        if (!runs.some((r) => r.suite === id && r.arm === arm)) throw new Error(`--part names ${id}@${arm}, which has no runs`);
+    }
   return parts;
+}
+
+// partText names a part in prose: "debug on 2026-10-22 at commit 21bbe026",
+// or for a part narrowed to the setups run again after a skill fix, "the
+// debug CLI + skill runs again on 2026-10-22, with the skill fix on top of
+// commit 21bbe026" (the fix is what the rerun measures, so it is named).
+function partText(p, setups) {
+  if (!p.arms) return `${joinWords(p.suites)} on ${p.date} at commit \`${p.commit}\``;
+  const labels = p.arms.map((a) => setups.find((x) => x.suite === p.suites[0] && x.arm === a)?.label ?? a);
+  return `the ${joinWords(p.suites)} ${joinWords(labels)} runs again on ${p.date}, with the skill fix on top of commit \`${p.commit}\``;
 }
 
 function parseCsv(text) {
@@ -542,7 +535,10 @@ function main() {
   const header = results.header;
   const runDate = header.started.slice(0, 10);
   const commit = header.gitSha.slice(0, 8);
-  const parts = parseParts(args.part, activeSuites, header);
+  const parts = parseParts(args.part, activeSuites, header, runs);
+  // Set when the stored transcripts were re-scored after a grader change
+  // (twevals regrade); the page says so instead of comparing old and new graders.
+  const regraded = header.regraded ? header.regraded.slice(0, 10) : null;
 
   const providersByModel = {};
   const modelIdByKey = {};
@@ -725,6 +721,7 @@ function main() {
       date: runDate,
       commit,
       parts,
+      regraded,
       cliVersion: header.cliVersion,
       backendVersion: header.backendVersion,
       runsPerCase: Math.max(...results.runs.map((r) => r.runIdx)),
@@ -891,7 +888,8 @@ function renderMarkdown(data) {
     title: run.title,
     date: run.date,
     commit: run.commit,
-    parts: run.parts.map((p) => ({ suites: p.suites.join(","), commit: p.commit, date: p.date })),
+    parts: run.parts.map((p) => ({ suites: p.suites.join(","), ...(p.arms ? { arms: p.arms.join(",") } : {}), commit: p.commit, date: p.date })),
+    ...(run.regraded ? { regraded: run.regraded } : {}),
     cliVersion: run.cliVersion,
     backendVersion: run.backendVersion,
     harnessUrl: run.harnessUrl,
@@ -938,10 +936,11 @@ function renderMarkdown(data) {
 
   const partsText =
     run.parts.length > 1
-      ? ` in ${words[run.parts.length]} batches: ${run.parts
-          .map((p) => `${joinWords(p.suites)} on ${p.date} at commit \`${p.commit}\``)
-          .join(", ")}`
+      ? ` in ${words[run.parts.length]} batches: ${run.parts.map((p) => partText(p, setups)).join(", ")}`
       : ` on ${run.date}, at commit \`${run.commit}\``;
+  const regradedText = run.regraded
+    ? ` Every run was scored by the graders as they stood on ${run.regraded}: after a grader fix the saved transcripts are re-scored, so no number here compares two graders.`
+    : "";
 
   const metricRows = [
     [COST_METRICS.spend, ...models.map((m) => usd(m.totals.costUsd, 2))],
@@ -1000,7 +999,7 @@ ${yamlBlock(front)}
 
 # ${run.title}
 
-${words[models.length][0].toUpperCase()}${words[models.length].slice(1)} models, ${modelList}, each ran the same ${run.runsPerModel} eval runs${partsText}. Every run gets a fresh Traceway backend seeded with the telemetry of a system broken in one specific way, and deterministic code grades the result. [How we measure](${run.methodologyUrl}) · [the harness and the cases](${run.harnessUrl}).
+${words[models.length][0].toUpperCase()}${words[models.length].slice(1)} models, ${modelList}, each ran the same ${run.runsPerModel} eval runs${partsText}. Every run gets a fresh Traceway backend seeded with the telemetry of a system broken in one specific way, and deterministic code grades the result.${regradedText} [How we measure](${run.methodologyUrl}) · [the harness and the cases](${run.harnessUrl}).
 
 This file is generated by \`website/scripts/build-benchmarks-data.mjs\` from the eval results and is the data behind ${PAGE_URL}. Change the generator, not this file.
 
@@ -1102,6 +1101,7 @@ function parseBack(data, markdown, summaryMd) {
   expect("total runs", parsed.run.totalRuns, data.run.totalRuns);
   expect("commit", parsed.run.commit, data.run.commit);
   expect("parts", JSON.stringify(parsed.run.parts), JSON.stringify(data.run.parts));
+  expect("regraded", parsed.run.regraded ?? null, data.run.regraded);
   expect("all graded", parsed.run.allGraded, (data.run.statuses.pass ?? 0) + (data.run.statuses.fail ?? 0) === data.run.totalRuns);
   for (const m of data.models) {
     const p = parsed.models.find((x) => x.key === m.key);

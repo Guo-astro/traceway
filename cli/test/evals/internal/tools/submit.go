@@ -72,13 +72,13 @@ func (t *Submit) Spec() Spec {
 	case SubmitDebug:
 		return Spec{Name: SubmitDebug, Description: "Submit your final debugging diagnosis. This ends the task. Every evidence item cites the id of an earlier tool call (the [call cNN] line at the top of its result).",
 			Parameters: obj(map[string]any{
-				"issue_hash":    strProp("The exception group hash (16 hex), if the bug has one"),
+				"issue_hash":    strProp("The exception group hash (16 hex) of the issue you diagnosed. Set it whenever the issue has one: it is in the task text, in the /issues/<hash> URL, or in the exceptions list and show output. Leave it empty only when there is no exception group."),
 				"occurrence_id": strProp("The occurrence you anchored on, if any"),
 				"category":      map[string]any{"type": "string", "enum": DebugCategories},
 				"culprit": obj(map[string]any{
 					"file":   strProp("Workspace-relative file"),
 					"symbol": strProp("Function or method"),
-					"line":   intProp("Line number"),
+					"line":   intProp("Line number of the faulty statement, in the file as you found it; a line in the edited file is accepted too"),
 				}, "file"),
 				"evidence":              evidenceSchema(),
 				"fix_summary":           strProp("What you changed or propose to change"),

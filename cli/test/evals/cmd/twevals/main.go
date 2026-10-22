@@ -22,7 +22,8 @@ Free:
   twevals plan    [selection] --models opus,astra [--runs N] --max-cost-usd X [--shards] [--out plan.json] [--summary FILE]
   twevals oracle  [--all | <case-id>... | --suites S] [--arms A] [-j N] [--keep] [--out DIR]
   twevals env up  <case-id>
-  twevals report  <run-dir>... [--merge] [--out DIR]
+  twevals report  <run-dir>... [--merge] [--replace] [--out DIR]
+  twevals regrade <run-dir> [--out DIR]
   twevals compare <run-dir> [baseline.json]
   twevals baseline update <run-dir> [--out baseline.json]
 
@@ -32,7 +33,9 @@ Paid (OpenRouter; guarded, see README):
 
 Selection flags: --preset smoke|core|full, --cases (comma-separated ids or globs; overrides the preset), --suites, --tags, --arms.
 list defaults to --preset full, plan and run to --preset smoke. oracle writes results.json and summary.md to --out
-(default .cache/oracle/<timestamp>).
+(default .cache/oracle/<timestamp>). regrade runs the offline graders (answer, trajectory, grounding, report) again
+over a run directory's stored records and keeps the state, hidden-test and judge verdicts; it rewrites the directory's
+results.json and summary.md unless --out names another place.
 Exit codes: 0 ok, 1 a regression, a failed oracle or an error, 2 bad usage or partial (cost ceiling, or infra_error above 10%).
 `
 
@@ -68,6 +71,8 @@ func main() {
 		err = cmdEnvUp(ctx, args[1:])
 	case "report":
 		err = cmdReport(args)
+	case "regrade":
+		err = cmdRegrade(args)
 	case "compare":
 		err = cmdCompare(args)
 	case "baseline":

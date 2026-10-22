@@ -169,8 +169,8 @@ Each case runs on several setups, so the skill and the two surfaces can be compa
 
 | Grader | Gates | Checks |
 |---|---|---|
-| `answer` | yes | The diagnosis: the right checklist row and not the distractor, the right endpoint or service, the onset within tolerance. For debug cases, the category, culprit file, symbol and line |
-| `grounding` | yes | Every cited call exists, succeeded, was not truncated, and its output contains the deciding signal. An id the model invented fails the run |
+| `answer` | yes | The diagnosis: the right checklist row and not the distractor, the right endpoint or service, the onset within tolerance. For debug cases, the category, culprit file, symbol and line. The line is read against the file before the fix, and a line reported in the edited file is mapped back through the edit. An empty issue hash is accepted when the prompt or the answer names the group; a different hash is a different group and fails |
+| `grounding` | yes | Every cited call exists and succeeded, and the output of a cited call contains the deciding signal. A call whose output was cut at the tool's size cap is evidence for the part the model saw and for nothing past the cut. An id the model invented fails the run |
 | `trajectory` | yes | Required, forbidden and ordered operations, such as opening one slow request, never writing on a read-only task, or asking before an ambiguous bulk write. CLI and MCP calls map to the same operations, and many cases accept more than one route to the same evidence |
 | `report` | yes | Statements the report must make, such as naming the figure that decides the case |
 | `state` | yes | After a write or setup run, the backend and the workspace are exactly as expected: the right two issues archived, not three |
@@ -194,7 +194,7 @@ The benchmarks page also shows **right answer and evidence**: runs whose answer,
 - **Every case is passable.** Each case has an oracle: a reference trajectory played by a fake model. It must pass on every setup the case lists, for $0, before the case is added, and `just eval-harness` replays every oracle after a harness change.
 - **A sandbox, not a host shell.** The agent's shell is an interpreter with the setup's `traceway` binary, `jq`, `awk`, read-only text utilities confined to the workspace and read-only `git`. Tool processes get a scrubbed environment, so no key or secret reaches them.
 - **The same conditions for every model.** `models.yaml` pins exact OpenRouter model ids, never a floating alias, with the same reasoning effort (medium), the same per-turn token limit (16k), the same prompts, tools and budgets. Requests go to the model's own vendor first, and every run records which provider served it.
-- **Compare like with like.** Results are only compared between runs on the same commit and the same graders. When a grader changes, saved transcripts are re-scored instead of comparing old numbers with new ones.
+- **Compare like with like.** Results are only compared between runs on the same commit and the same graders. When a grader changes, saved transcripts are re-scored instead of comparing old numbers with new ones: `twevals regrade <run-dir>` runs the answer, trajectory, grounding and report graders again over the stored records, keeps the hidden-test, state and judge verdicts, and recomputes each run's status. A change to a skill cannot be re-scored, because it changes what the model does; the affected setups are run again and replace the earlier runs (`twevals report --merge --replace`), and the page names the batch they came from.
 
 ## Spending controls
 

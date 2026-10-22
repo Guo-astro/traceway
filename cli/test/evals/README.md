@@ -110,7 +110,14 @@ oracle on every arm it lists and writes `results.json` and `summary.md` to
 `--out` (default `.cache/oracle/<timestamp>/`).
 `twevals report <dir>... --out DIR` merges shard results (`--out` is
 required for more than one directory, and a run that appears twice is an
-error). `twevals compare <dir>`
+error unless `--replace` says the later directory is a rerun that replaces
+it). `twevals regrade <dir>` runs the offline graders (answer, trajectory,
+efficiency, grounding, report) again over a run directory's stored records
+with the cases and graders as they are now, keeps the verdicts that needed
+the live instance (state, hidden tests, judge, setup verify), recomputes each
+status and rewrites `results.json`, `summary.md` and every `result.json`
+(`--out DIR` writes the first two elsewhere instead). It is how a grader fix
+is applied to runs already paid for. `twevals compare <dir>`
 applies the regression rule. `twevals baseline update <dir>` rewrites
 `baseline.json` for you to commit.
 

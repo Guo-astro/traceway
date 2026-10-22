@@ -213,10 +213,10 @@ traceway exceptions list --since 7d --search "checkout" --output json \
 ### 2. Drill into the issue
 
 ```bash
-traceway exceptions show <hash>
+traceway exceptions show <hash> --page-size 5
 ```
 
-This is the high-value call: full stack trace, occurrence list with `recordedAt`, `attributes` (user IDs, app versions, request context), and optional `traceId` / `spanId` / `sessionId` per occurrence. `traceId` is the OpenTelemetry trace id (32 hex characters), the same id the request's logs and spans carry. The response also has `relatedEntity`: the endpoint, task or AI trace the newest occurrence happened in, with the `id` and `recordedAt` that `endpoints show` / `tasks show` / `ai-traces show` take. `firstSeen` correlates with deploys: a group that first appeared right after a release points at that release's diff. A bogus hash exits 5 with `not_found`; fall back to search.
+This is the high-value call: full stack trace, occurrence list with `recordedAt`, `attributes` (user IDs, app versions, request context), and optional `traceId` / `spanId` / `sessionId` per occurrence. Occurrences come newest first, and each carries its own full stack trace, so the default page of 50 runs to well over 100k characters and gets cut off by any tool output limit; `--page-size 5` keeps the group header plus the five newest occurrences, which is what a first read needs. Keep the default page only when you pipe the JSON through `jq` to reduce it, as below. `traceId` is the OpenTelemetry trace id (32 hex characters), the same id the request's logs and spans carry. The response also has `relatedEntity`: the endpoint, task or AI trace the newest occurrence happened in, with the `id` and `recordedAt` that `endpoints show` / `tasks show` / `ai-traces show` take. `firstSeen` correlates with deploys: a group that first appeared right after a release points at that release's diff. A bogus hash exits 5 with `not_found`; fall back to search.
 
 **When the user gave an issue URL (or hash), fix the LAST occurrence — not "the group".** A single hash can bundle *several distinct errors*: the hash is computed from a normalized stack trace with the message stripped, so two unrelated failures that share their top frames (e.g. both captured at the same middleware/recovery frame) collapse into one group. The group's representative stack trace and `firstSeen` may belong to a different, now-dormant error than the one the user is looking at. Anchor on the most recent occurrence and fix that specific failure path:
 

@@ -238,14 +238,26 @@ func TestGrounding(t *testing.T) {
 	if v := Grounding(perfInput(sub("c01", ""), jqFailed("c01", out+"\njq: error: Cannot iterate over null", out))); !v.Pass {
 		t.Fatalf("a trailing jq error failed a cited call: %s", failures(v))
 	}
+	// A call cut at the output cap is evidence for the part the model saw.
+	cut := call("c01", true, out+"\n[output truncated: 90000 more characters.]", "traceway exceptions show abc")
+	cut.Truncated = true
+	if v := Grounding(perfInput(sub("c01", ""), cut)); !v.Pass {
+		t.Fatalf("a truncated call with the key in view failed: %s", failures(v))
+	} else if len(v.Notes) == 0 {
+		t.Fatal("a truncated citation should be noted")
+	}
+	// ... and for nothing past the cut, even when the raw output had it.
+	hidden := call("c01", true, "{\"group\":{}}\n[output truncated: 90000 more characters.]", "traceway exceptions show abc")
+	hidden.Truncated = true
+	hidden.Ops[0].Output = out
 	tests := map[string]struct {
 		in   *Input
 		want string
 	}{
-		"unknown call":   {perfInput(sub("c07", ""), c1), "not a call"},
-		"failed call":    {perfInput(sub("c01", ""), call("c01", false, out, "traceway endpoints show x")), "which failed"},
-		"truncated call": {perfInput(sub("c01", ""), &record.Call{ID: "c01", OK: true, Truncated: true, Output: out}), "truncated"},
-		"invented id":    {perfInput(sub("c01", "and trace 4bf92f3577b34da6a3ce929d0e0e4736"), c1), "no tool returned"},
+		"unknown call":                     {perfInput(sub("c07", ""), c1), "not a call"},
+		"failed call":                      {perfInput(sub("c01", ""), call("c01", false, out, "traceway endpoints show x")), "which failed"},
+		"truncated call, key past the cut": {perfInput(sub("c01", ""), hidden), "contains"},
+		"invented id":                      {perfInput(sub("c01", "and trace 4bf92f3577b34da6a3ce929d0e0e4736"), c1), "no tool returned"},
 		// The submit call itself is recorded with the submission as its
 		// arguments; that must not vouch for the ids in it.
 		"invented id, submit recorded": {perfInput(sub("c01", "and trace 4bf92f3577b34da6a3ce929d0e0e4736"), c1,

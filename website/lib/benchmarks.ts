@@ -92,7 +92,7 @@ export type Group = {
 
 // One batch of runs: which suites ran on which day at which commit. A page
 // built from one run has one part.
-export type RunPart = { suites: string[]; commit: string; date: string };
+export type RunPart = { suites: string[]; arms?: string[]; commit: string; date: string };
 
 export type BenchmarkData = {
   run: {
@@ -100,6 +100,9 @@ export type BenchmarkData = {
     date: string;
     commit: string;
     parts: RunPart[];
+    // The date the stored transcripts were last re-scored, when the page's
+    // runs were graded after a grader fix rather than at their own run time.
+    regraded?: string;
     cliVersion: string;
     backendVersion: string;
     harnessUrl: string;
@@ -400,9 +403,14 @@ export function parseBenchmark(source: string): BenchmarkData {
   }));
 
   const totalRuns = models.reduce((n, m) => n + m.totals.runs, 0);
-  const fmParts = (fm.parts ?? []) as { suites: string; commit: string; date: string }[];
+  const fmParts = (fm.parts ?? []) as { suites: string; arms?: string; commit: string; date: string }[];
   const parts: RunPart[] = fmParts.length
-    ? fmParts.map((p) => ({ suites: String(p.suites).split(","), commit: String(p.commit), date: String(p.date) }))
+    ? fmParts.map((p) => ({
+        suites: String(p.suites).split(","),
+        ...(p.arms ? { arms: String(p.arms).split(",") } : {}),
+        commit: String(p.commit),
+        date: String(p.date),
+      }))
     : [{ suites: (fm.suites as { id: string }[]).map((s) => s.id), commit: String(fm.commit), date: String(fm.date) }];
   return {
     run: {
@@ -410,6 +418,7 @@ export function parseBenchmark(source: string): BenchmarkData {
       date: String(fm.date),
       commit: String(fm.commit),
       parts,
+      ...(fm.regraded ? { regraded: String(fm.regraded) } : {}),
       cliVersion: String(fm.cliVersion),
       backendVersion: String(fm.backendVersion),
       harnessUrl: String(fm.harnessUrl),

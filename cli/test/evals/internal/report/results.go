@@ -41,6 +41,9 @@ type Header struct {
 	ReplacedSpendUSD float64           `json:"replacedSpendUsd,omitempty"`
 	Oracle           bool              `json:"oracle,omitempty"`
 	CI               map[string]string `json:"ci,omitempty"`
+	// Regraded is set when the offline graders were run again over the
+	// stored run records (twevals regrade).
+	Regraded string `json:"regraded,omitempty"`
 }
 
 // Results is results.json.
@@ -155,9 +158,11 @@ func Load(dir string) (*Results, error) {
 
 // Merge combines shard results under one header. A run that appears in
 // two parts (a merged directory passed with its own shards, or the same shard
-// twice) is an error, and parts from different commits, models or binaries
-// are reported in the returned notes.
-func Merge(parts []*Results) (*Results, []string, error) {
+// twice) is an error, unless replace is set: then the later part's run
+// replaces the earlier one (a rerun of the same case, arm and model), and
+// each replacement is listed in the returned notes, along with parts from
+// different commits, models or binaries.
+func Merge(parts []*Results, replace bool) (*Results, []string, error) {
 	out := &Results{}
 	total, replaced := 0.0, 0.0
 	from := map[string]int{}
@@ -180,11 +185,20 @@ func Merge(parts []*Results) (*Results, []string, error) {
 		}
 		for _, r := range p.Runs {
 			if j, ok := from[r.Key()]; ok {
-				return nil, nil, fmt.Errorf("run %s is in part %d and part %d: pass each shard once, and not a merged directory together with its shards", r.Key(), j+1, i+1)
+				if !replace {
+					return nil, nil, fmt.Errorf("run %s is in part %d and part %d: pass each shard once, and not a merged directory together with its shards (or pass --replace for a rerun)", r.Key(), j+1, i+1)
+				}
+				notes = append(notes, fmt.Sprintf("run %s from part %d (%s) replaces the one in part %d", r.Key(), i+1, p.Header.RunID, j+1))
+				for k, prev := range out.Runs {
+					if prev.Key() == r.Key() {
+						out.Runs = append(out.Runs[:k], out.Runs[k+1:]...)
+						break
+					}
+				}
 			}
 			from[r.Key()] = i
+			out.Runs = append(out.Runs, r)
 		}
-		out.Runs = append(out.Runs, p.Runs...)
 	}
 	out.Header.MaxCostUSD = total
 	out.Header.ReplacedSpendUSD = replaced

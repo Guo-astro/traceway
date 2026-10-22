@@ -116,6 +116,7 @@ func cmdEnvUp(ctx context.Context, args []string) error {
 func cmdReport(args []string) error {
 	fs := flag.NewFlagSet("report", flag.ExitOnError)
 	merge := fs.Bool("merge", false, "merge several run directories (shards) into one")
+	replace := fs.Bool("replace", false, "a run that a later directory repeats replaces the earlier one (a rerun) instead of being an error")
 	out := fs.String("out", "", "write results.json and summary.md here")
 	pos := parseInterleaved(fs, args)
 	if len(pos) == 0 {
@@ -143,7 +144,7 @@ func cmdReport(args []string) error {
 		if *out == "" {
 			return &exitError{2, "merging several run directories needs --out (writing into the first one would overwrite that shard's results)"}
 		}
-		merged, notes, err := report.Merge(parts)
+		merged, notes, err := report.Merge(parts, *replace)
 		if err != nil {
 			return &exitError{2, err.Error()}
 		}
