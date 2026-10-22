@@ -129,7 +129,10 @@ agents:
     fallback_price: {prompt: 0.15, completion: 0.60, cache_read: 0.015, cache_write: 0.15}
 
   mimo-pro:
-    # Xiaomi first party only: with fallbacks on, the smoke run was served by
+    # Not benchmarked yet: too slow for the case budgets on 2026-10-22. On
+    # Xiaomi one write case took 4 turns in 8 minutes, and on DeepInfra a perf
+    # case ran out of its 10 minute budget after 14 tool calls. Pinned to
+    # Xiaomi only, since with fallbacks on the smoke run was served by
     # DeepInfra although Xiaomi was up.
     id: xiaomi/mimo-v2.6-pro
     label: MiMo-V2.6 Pro

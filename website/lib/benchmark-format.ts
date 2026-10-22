@@ -8,9 +8,8 @@ export const MODEL_COLOR: Record<ModelKey, string> = {
   opus: "var(--series-3)",
   luna: "var(--series-4)",
   "minimax-flash": "var(--series-5)",
-  "mimo-pro": "var(--series-6)",
-  "qwen-27b": "var(--series-7)",
-  glm: "var(--series-8)",
+  "qwen-27b": "var(--series-6)",
+  glm: "var(--series-7)",
 };
 
 export const KIND_LABEL: Record<RunKind, string> = {

@@ -30,14 +30,13 @@ const PAGE_URL = "https://tracewayapp.com/benchmarks";
 
 // Display order. A model's palette slot (lib/benchmark-format.ts) is fixed
 // to its key, so adding a model never recolors the others.
-const MODEL_ORDER = ["haiku", "deepseek-flash", "opus", "luna", "minimax-flash", "mimo-pro", "qwen-27b", "glm"];
+const MODEL_ORDER = ["haiku", "deepseek-flash", "opus", "luna", "minimax-flash", "qwen-27b", "glm"];
 const MODEL_SHORT = {
   haiku: "Haiku",
   "deepseek-flash": "DeepSeek",
   opus: "Opus",
   luna: "Luna",
   "minimax-flash": "MiniMax",
-  "mimo-pro": "MiMo",
   "qwen-27b": "Qwen 27B",
   glm: "GLM",
 };
@@ -47,7 +46,6 @@ const MODEL_VENDOR = {
   opus: "Anthropic",
   luna: "OpenAI",
   "minimax-flash": "MiniMax",
-  "mimo-pro": "Xiaomi",
   "qwen-27b": "Alibaba",
   glm: "Z.ai",
 };
@@ -57,7 +55,6 @@ const MODEL_WEIGHTS = {
   opus: "proprietary",
   luna: "proprietary",
   "minimax-flash": "open",
-  "mimo-pro": "open",
   "qwen-27b": "open",
   glm: "open",
 };

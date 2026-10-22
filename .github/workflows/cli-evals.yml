@@ -32,9 +32,9 @@ on:
         required: false
         description: "cli+skill,cli-noskill,mcp,cli-write+skill,mcp-write,cli+setup-skill"
       models:
-        type: choice
-        options: ["opus,astra", "opus", "astra"]
+        type: string
         default: "opus,astra"
+        description: "comma-separated agent keys from models.yaml: opus, astra, haiku, deepseek-flash, luna, minimax-flash, mimo-pro, qwen-27b, glm"
       runs:
         type: number
         default: 1

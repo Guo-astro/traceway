@@ -18,9 +18,13 @@ tools, and deterministic graders score the result.
 | write | The write playbooks (pages, alerts, monitors, archive, post-mortems, slow marks) and the 403 policy | `cli-write+skill`, `mcp-write` |
 | setup | Instrumenting an app with the setup skill until its telemetry arrives | `cli+setup-skill` |
 
-The agents are `anthropic/claude-opus-5.5` and `openai/gpt-6-astra`, and the
-judge is `anthropic/claude-haiku-5.5`. All three run on OpenRouter, in the same
-harness, with the same tools, prompts and budgets (`models.yaml`).
+The agents are the entries of `models.yaml` (`opus`, `astra`, `haiku`,
+`deepseek-flash`, `luna`, `minimax-flash`, `mimo-pro`, `qwen-27b`, `glm`), and
+the judge is `anthropic/claude-haiku-5.5`. All of them run on OpenRouter, in
+the same harness, with the same tools, prompts and budgets, each pinned to
+its vendor's own endpoint. A model that cannot finish the cases inside their
+wall-clock budgets (MiMo-V2.6 Pro, as of 2026-10-22) stays in the catalog
+with a note and off the benchmarks page.
 
 ## The manual-only policy
 
@@ -82,7 +86,7 @@ the `evals` gate. `just eval-dispatch -f preset=smoke -f max_cost_usd=30` from
 | `preset` | `smoke`: the cases tagged `smoke`, primary arm. `core`: every case, primary arm. `full`: every arm the case lists |
 | `cases` | Comma-separated ids or globs (`perf-db-*`). Overrides the preset's case filter |
 | `suites`, `arms` | Narrow the selection |
-| `models` | `opus,astra`, `opus` or `astra` |
+| `models` | Comma-separated agent keys from `models.yaml` (`opus,astra` by default) |
 | `runs` | Repeats per case, 1-3 |
 | `max_cost_usd` | Cap for the whole dispatch, split per shard (see the policy above). Required |
 | `dry_run` | Preflight, harness tests and every oracle only. Costs $0. Use it to validate workflow edits and Dependabot bumps |

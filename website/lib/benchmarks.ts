@@ -6,7 +6,6 @@ export type ModelKey =
   | "opus"
   | "luna"
   | "minimax-flash"
-  | "mimo-pro"
   | "qwen-27b"
   | "glm";
 
