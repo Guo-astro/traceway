@@ -28,10 +28,39 @@ const HARNESS_URL =
 const METHODOLOGY_URL = "https://docs.tracewayapp.com/learn/agent-benchmarks";
 const PAGE_URL = "https://tracewayapp.com/benchmarks";
 
-const MODEL_ORDER = ["haiku", "deepseek-flash", "opus"];
-const MODEL_SHORT = { haiku: "Haiku", "deepseek-flash": "DeepSeek", opus: "Opus" };
-const MODEL_VENDOR = { haiku: "Anthropic", "deepseek-flash": "DeepSeek", opus: "Anthropic" };
-const MODEL_WEIGHTS = { haiku: "proprietary", "deepseek-flash": "open", opus: "proprietary" };
+// Display order. A model's palette slot (lib/benchmark-format.ts) is fixed
+// to its key, so adding a model never recolors the others.
+const MODEL_ORDER = ["haiku", "deepseek-flash", "opus", "luna", "minimax-flash", "mimo-pro", "qwen-27b", "glm"];
+const MODEL_SHORT = {
+  haiku: "Haiku",
+  "deepseek-flash": "DeepSeek",
+  opus: "Opus",
+  luna: "Luna",
+  "minimax-flash": "MiniMax",
+  "mimo-pro": "MiMo",
+  "qwen-27b": "Qwen 27B",
+  glm: "GLM",
+};
+const MODEL_VENDOR = {
+  haiku: "Anthropic",
+  "deepseek-flash": "DeepSeek",
+  opus: "Anthropic",
+  luna: "OpenAI",
+  "minimax-flash": "MiniMax",
+  "mimo-pro": "Xiaomi",
+  "qwen-27b": "Alibaba",
+  glm: "Z.ai",
+};
+const MODEL_WEIGHTS = {
+  haiku: "proprietary",
+  "deepseek-flash": "open",
+  opus: "proprietary",
+  luna: "proprietary",
+  "minimax-flash": "open",
+  "mimo-pro": "open",
+  "qwen-27b": "open",
+  glm: "open",
+};
 
 // Every suite the harness has, in display order. Only the suites with runs in
 // the source directory are rendered.
@@ -316,39 +345,52 @@ function parseArgs(argv) {
 // may be narrowed to the setups that were run again after a fix:
 // `--part debug@cli+skill:1a2b3c4d:2026-10-22` says the debug suite's
 // cli+skill runs come from that later batch, and the suite's other setups
-// from the part that names the suite alone.
+// from the part that names the suite alone. A part may also be narrowed to
+// the models it ran, when models were added to the page in a later batch:
+// `--part perf,debug,write/glm,luna:5e6f7a8b:2026-10-22`. Every suite needs
+// exactly one unnarrowed part per model.
 function parseParts(values, suites, header, runs) {
   if (!values) return [{ suites: suites.map((s) => s.id), commit: header.gitSha.slice(0, 8), date: header.started.slice(0, 10) }];
   const parts = values.map((v) => {
-    const m = v.match(/^([\w,-]+)(?:@([\w+,-]+))?:([0-9a-f]{7,40}):(\d{4}-\d{2}-\d{2})$/);
-    if (!m) throw new Error(`--part ${v}: want <suites>[@<arms>]:<commit>:<YYYY-MM-DD>`);
+    const m = v.match(/^([\w,-]+)(?:@([\w+,-]+))?(?:\/([\w,-]+))?:([0-9a-f]{7,40}):(\d{4}-\d{2}-\d{2})$/);
+    if (!m) throw new Error(`--part ${v}: want <suites>[@<arms>][/<models>]:<commit>:<YYYY-MM-DD>`);
     const part = { suites: m[1].split(",") };
     if (m[2]) part.arms = m[2].split(",");
-    part.commit = m[3].slice(0, 8);
-    part.date = m[4];
+    if (m[3]) part.models = m[3].split(",");
+    part.commit = m[4].slice(0, 8);
+    part.date = m[5];
     return part;
   });
-  for (const s of suites) {
-    const owners = parts.filter((p) => !p.arms && p.suites.includes(s.id));
-    if (owners.length !== 1) throw new Error(`suite ${s.id} must be in exactly one --part without arms, found ${owners.length}`);
-  }
-  for (const p of parts)
+  const covers = (p, model) => !p.models || p.models.includes(model);
+  for (const s of suites)
+    for (const model of MODEL_ORDER) {
+      const owners = parts.filter((p) => !p.arms && p.suites.includes(s.id) && covers(p, model));
+      if (owners.length !== 1) throw new Error(`suite ${s.id} for ${model} must be in exactly one --part without arms, found ${owners.length}`);
+    }
+  for (const p of parts) {
+    for (const model of p.models ?? [])
+      if (!MODEL_ORDER.includes(model)) throw new Error(`--part names model ${model}, which is not on the page`);
     for (const id of p.suites) {
       if (!suites.some((s) => s.id === id)) throw new Error(`--part names suite ${id}, which has no runs`);
       for (const arm of p.arms ?? [])
-        if (!runs.some((r) => r.suite === id && r.arm === arm)) throw new Error(`--part names ${id}@${arm}, which has no runs`);
+        for (const model of p.models ?? MODEL_ORDER)
+          if (!runs.some((r) => r.suite === id && r.arm === arm && r.model === model))
+            throw new Error(`--part names ${id}@${arm} for ${model}, which has no runs`);
     }
+  }
   return parts;
 }
 
 // partText names a part in prose: "debug on 2026-10-22 at commit 21bbe026",
 // or for a part narrowed to the setups run again after a skill fix, "the
 // debug CLI + skill runs again on 2026-10-22, with the skill fix on top of
-// commit 21bbe026" (the fix is what the rerun measures, so it is named).
-function partText(p, setups) {
-  if (!p.arms) return `${joinWords(p.suites)} on ${p.date} at commit \`${p.commit}\``;
+// commit 21bbe026" (the fix is what the rerun measures, so it is named). A
+// part narrowed to some models names them: "... for Haiku, DeepSeek and Opus".
+function partText(p, setups, models) {
+  const forModels = p.models ? ` for ${joinWords(p.models.map((k) => models.find((m) => m.key === k).short))}` : "";
+  if (!p.arms) return `${joinWords(p.suites)}${forModels} on ${p.date} at commit \`${p.commit}\``;
   const labels = p.arms.map((a) => setups.find((x) => x.suite === p.suites[0] && x.arm === a)?.label ?? a);
-  return `the ${joinWords(p.suites)} ${joinWords(labels)} runs again on ${p.date}, with the skill fix of commit \`${p.commit}\``;
+  return `the ${joinWords(p.suites)} ${joinWords(labels)} runs${forModels} again on ${p.date}, with the skill fix of commit \`${p.commit}\``;
 }
 
 function parseCsv(text) {
@@ -848,7 +890,7 @@ function crossCheck(data, summaryMd, statsMd) {
 const usd = (x, digits) => `$${x.toFixed(digits)}`;
 const frac = (pass, runs) => `${pass}/${runs} (${pct(pass, runs)}%)`;
 const signedPp = (pp) => `${pp >= 0 ? "+" : "-"}${Math.abs(pp)}pp`;
-const words = ["zero", "one", "two", "three", "four", "five"];
+const words = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
 const joinWords = (xs) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
 
 function yamlScalar(v) {
@@ -888,7 +930,13 @@ function renderMarkdown(data) {
     title: run.title,
     date: run.date,
     commit: run.commit,
-    parts: run.parts.map((p) => ({ suites: p.suites.join(","), ...(p.arms ? { arms: p.arms.join(",") } : {}), commit: p.commit, date: p.date })),
+    parts: run.parts.map((p) => ({
+      suites: p.suites.join(","),
+      ...(p.arms ? { arms: p.arms.join(",") } : {}),
+      ...(p.models ? { models: p.models.join(",") } : {}),
+      commit: p.commit,
+      date: p.date,
+    })),
     ...(run.regraded ? { regraded: run.regraded } : {}),
     cliVersion: run.cliVersion,
     backendVersion: run.backendVersion,
@@ -936,7 +984,7 @@ function renderMarkdown(data) {
 
   const partsText =
     run.parts.length > 1
-      ? ` in ${words[run.parts.length]} batches: ${run.parts.map((p) => partText(p, setups)).join(", ")}`
+      ? ` in ${words[run.parts.length]} batches: ${run.parts.map((p) => partText(p, setups, models)).join(", ")}`
       : ` on ${run.date}, at commit \`${run.commit}\``;
   const regradedText = run.regraded
     ? ` Every saved transcript was scored on ${run.regraded} by the same graders: after a grader fix the transcripts are scored again, so no number here mixes two versions of a grader.`

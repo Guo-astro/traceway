@@ -1,9 +1,16 @@
 import type { ModelKey, RunKind } from "@/lib/benchmarks";
 
+// One palette slot per model, in a fixed order: a model keeps its color
+// whatever else is on the chart.
 export const MODEL_COLOR: Record<ModelKey, string> = {
-  haiku: "var(--a3)",
-  "deepseek-flash": "var(--a4)",
-  opus: "var(--a1)",
+  haiku: "var(--series-1)",
+  "deepseek-flash": "var(--series-2)",
+  opus: "var(--series-3)",
+  luna: "var(--series-4)",
+  "minimax-flash": "var(--series-5)",
+  "mimo-pro": "var(--series-6)",
+  "qwen-27b": "var(--series-7)",
+  glm: "var(--series-8)",
 };
 
 export const KIND_LABEL: Record<RunKind, string> = {

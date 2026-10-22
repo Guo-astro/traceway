@@ -1,6 +1,14 @@
 import matter from "gray-matter";
 
-export type ModelKey = "haiku" | "deepseek-flash" | "opus";
+export type ModelKey =
+  | "haiku"
+  | "deepseek-flash"
+  | "opus"
+  | "luna"
+  | "minimax-flash"
+  | "mimo-pro"
+  | "qwen-27b"
+  | "glm";
 
 export type Totals = {
   runs: number;
@@ -90,9 +98,16 @@ export type Group = {
   results: Record<ModelKey, { runs: number; pass: number }>;
 };
 
-// One batch of runs: which suites ran on which day at which commit. A page
+// One batch of runs: which suites ran on which day at which commit, for
+// which models when the batch did not cover every model on the page. A page
 // built from one run has one part.
-export type RunPart = { suites: string[]; arms?: string[]; commit: string; date: string };
+export type RunPart = {
+  suites: string[];
+  arms?: string[];
+  models?: ModelKey[];
+  commit: string;
+  date: string;
+};
 
 export type BenchmarkData = {
   run: {
@@ -403,11 +418,12 @@ export function parseBenchmark(source: string): BenchmarkData {
   }));
 
   const totalRuns = models.reduce((n, m) => n + m.totals.runs, 0);
-  const fmParts = (fm.parts ?? []) as { suites: string; arms?: string; commit: string; date: string }[];
+  const fmParts = (fm.parts ?? []) as { suites: string; arms?: string; models?: string; commit: string; date: string }[];
   const parts: RunPart[] = fmParts.length
     ? fmParts.map((p) => ({
         suites: String(p.suites).split(","),
         ...(p.arms ? { arms: String(p.arms).split(",") } : {}),
+        ...(p.models ? { models: String(p.models).split(",") as ModelKey[] } : {}),
         commit: String(p.commit),
         date: String(p.date),
       }))
