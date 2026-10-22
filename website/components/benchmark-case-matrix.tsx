@@ -186,12 +186,24 @@ export function BenchmarkCaseMatrix({
         const columns = suite.setups.flatMap((arm) =>
           models.map((m) => ({ arm, model: m })),
         );
+        // Not every case runs on every setup, so the run count is counted,
+        // not multiplied out.
+        const runCount = rows.reduce(
+          (n, c) =>
+            n +
+            models.reduce(
+              (k, m) =>
+                k + Object.keys(c.runs[m.key]).filter((arm) => suite.setups.includes(arm)).length,
+              0,
+            ),
+          0,
+        );
         return (
           <div key={suite.id} className="mt-8">
             <p className="font-mono text-[0.6875rem] uppercase tracking-[0.14em] text-fg-3">
               {suite.label} · {rows.length}{" "}
-              {rows.length === 1 ? "case" : "cases"} × {suite.setups.length}{" "}
-              setups × {models.length} models
+              {rows.length === 1 ? "case" : "cases"} on {suite.setups.length}{" "}
+              setups · {models.length} models · {runCount} runs
             </p>
             <div
               className="mt-3 overflow-x-auto rounded-xl"

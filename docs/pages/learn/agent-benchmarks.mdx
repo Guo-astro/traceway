@@ -181,7 +181,7 @@ Each case runs on several setups, so the skill and the two surfaces can be compa
 
 ### What counts as a pass
 
-A run passes when its answer is right, its evidence is grounded and its writes are safe. How the agent got there is not graded: re-running a command to check a JSON shape is not a wrong answer, so call counts are reported, never gated. Each case still has a hard budget (turns, tool calls, wall-clock time); a run that exhausts it counts as a fail.
+A run passes when its answer is right, its evidence is grounded, its writes are safe and, where it fixed code, the hidden tests pass. How the agent got there is not graded: re-running a command to check a JSON shape is not a wrong answer, so call counts are reported, never gated. Each case still has a hard budget (turns, tool calls, wall-clock time); a run that exhausts it counts as a fail.
 
 A run that hits an infrastructure error, or stops at the spending cap, is left out of the pass rates and can be resumed.
 

@@ -47,11 +47,13 @@ const capitalize = (s: string) => s[0].toUpperCase() + s.slice(1);
 const partText = (p: (typeof run.parts)[number], withCommit: boolean) => {
   if (!p.arms) return `${joinList(p.suites)} ${withCommit ? "ran " : ""}on ${p.date}${withCommit ? ` at commit ${p.commit}` : ""}`;
   const labels = p.arms.map((a) => setupLabels[a] ?? a);
-  return `the ${joinList(p.suites)} ${joinList(labels)} runs ${withCommit ? "ran again" : "again"} on ${p.date}${withCommit ? `, with the skill fix on top of commit ${p.commit}` : ""}`;
+  return `the ${joinList(p.suites)} ${joinList(labels)} runs ${withCommit ? "ran again" : "again"} on ${p.date}${withCommit ? `, with the skill fix of commit ${p.commit}` : ""}`;
 };
 const regradedText = run.regraded
-  ? ` Every run was scored by the graders as they stood on ${run.regraded}: after a grader fix the saved transcripts are re-scored, so no number here compares two graders.`
+  ? ` Every saved transcript was scored on ${run.regraded} by the same graders: after a grader fix the transcripts are scored again, so no number here mixes two versions of a grader.`
   : "";
+const runDates = [...new Set(run.parts.map((p) => p.date))].sort();
+const totalCases = suites.reduce((n, s) => n + s.cases, 0);
 const joinList = (items: string[]) =>
   items.length < 2
     ? items.join("")
@@ -60,7 +62,7 @@ const modelCount = numberWord(models.length);
 
 export const metadata: Metadata = {
   title: "Traceway AI Benchmarks",
-  description: `How well do AI agents debug production with Traceway? ${run.runsPerModel} seeded production failures, ${modelCount} models (${models.map((m) => m.label).join(", ")}), graded by deterministic code. Pass rates, costs and every case.`,
+  description: `How well do AI agents debug production with Traceway? ${totalCases} seeded production failures, ${run.runsPerModel} runs per model, ${modelCount} models (${models.map((m) => m.label).join(", ")}), graded by deterministic code. Pass rates, costs and every case.`,
 };
 
 const CARD_STYLE = {
@@ -112,18 +114,25 @@ const cliMcpPairs = [
   (c) =>
     setups.find((s) => s.suite === c.suite && s.arm === c.cliArm)!.results[models[0].key].runs >= 3,
 );
-const biggestUplift = pickBy((m) => upliftOf(m.key).pp, "max");
+// The uplift badge goes to a model only when it leads on every suite that
+// has a control arm; the finding below gives the per-suite numbers.
+const upliftLeaders = upliftSuites.map((suite) =>
+  pickBy((m) => upliftOf(m.key, suite).pp, "max"),
+);
+const biggestUplift =
+  upliftLeaders.length && upliftLeaders.every((m) => m.key === upliftLeaders[0].key)
+    ? upliftLeaders[0]
+    : null;
 const cheapest = pickBy((m) => m.totals.costUsd, "min");
 const priciest = pickBy((m) => m.totals.costUsd, "max");
 
 const BADGES: Partial<Record<ModelKey, string[]>> = {};
-for (const [m, label] of [
+const badgeOf: [Model | null, string][] = [
   [best, "Highest pass rate"],
   [value, "Lowest cost per pass"],
   [biggestUplift, "Biggest skill uplift"],
-] as const) {
-  (BADGES[m.key] ??= []).push(label);
-}
+];
+for (const [m, label] of badgeOf) if (m) (BADGES[m.key] ??= []).push(label);
 
 const controls = groupById["perf-ctl"];
 const byControls = [...models].sort(
@@ -132,6 +141,11 @@ const byControls = [...models].sort(
 const mcpPerf = (key: ModelKey) =>
   comparisons.cliVsMcp.find((c) => c.suite === "perf" && c.model === key)!;
 const mcpFavoured = models.filter((m) => mcpPerf(m.key).pp < 0);
+const mcpGapText = (a: ModelKey, b: ModelKey) => {
+  const gap = mcpPerf(b).mcp - mcpPerf(a).mcp;
+  if (gap === 0) return `level with ${modelByKey[b].short}`;
+  return `${Math.abs(gap)}pp ${gap > 0 ? "behind" : "ahead of"} ${modelByKey[b].short}`;
+};
 const upliftOrder = [...models].sort(
   (a, b) => upliftOf(b.key).pp - upliftOf(a.key).pp,
 );
@@ -149,15 +163,54 @@ const byDebug = hasSuite("debug")
       (a, b) => suitePasses("debug", b.key) - suitePasses("debug", a.key),
     )
   : [];
+const debugMargin =
+  byDebug.length > 1
+    ? suitePasses("debug", byDebug[0].key) - suitePasses("debug", byDebug[1].key)
+    : 0;
+const groupLeaders = (id: string) => {
+  const g = groupById[id];
+  const top = Math.max(...models.map((m) => g.results[m.key].pass));
+  return models.filter((m) => g.results[m.key].pass === top);
+};
+const groupCounts = (id: string) =>
+  joinList(
+    models.map(
+      (m) => `${m.short} ${groupById[id].results[m.key].pass}/${groupById[id].results[m.key].runs}`,
+    ),
+  );
 const noWrites = cases.find((c) => c.id === "debug-no-writes");
-const noWritesClean = noWrites
-  ? models.filter((m) =>
-      Object.values(noWrites.runs[m.key]).every((r) => r.status === "pass"),
+const noWritesRuns = noWrites
+  ? models.flatMap((m) =>
+      Object.entries(noWrites.runs[m.key]).map(([arm, r]) => ({ model: m, arm, run: r })),
     )
   : [];
+const noWritesPassed = noWritesRuns.filter((x) => x.run.status === "pass");
+const noWritesTouched = noWritesRuns.filter((x) => x.run.graders.includes("state"));
+const GRADER_NAME: Record<string, string> = {
+  answer: "answer",
+  grounding: "grounding",
+  trajectory: "trajectory",
+  report: "report",
+  state: "state",
+  hidden_tests: "hidden-test",
+};
+const noWritesFailedOn = [
+  ...new Set(
+    noWritesRuns
+      .filter((x) => x.run.status !== "pass")
+      .flatMap((x) => x.run.graders.map((g) => GRADER_NAME[g] ?? g)),
+  ),
+];
+const whereRan = (xs: typeof noWritesRuns) =>
+  joinList(xs.map((x) => `${x.model.short} on the ${(setupLabels[x.arm] ?? x.arm).replace(/^Write /, "write ")}`));
+
+// A setup with one or two cases is a coin flip, not a rate: it stays in the
+// tables and out of the charts.
+const chartSetups = setups.filter((s) => s.results[models[0].key].runs >= 3);
+const unchartedSetups = setups.length - chartSetups.length;
 
 const costPoints: CostPoint[] = [
-  ...setups.flatMap((s) =>
+  ...chartSetups.flatMap((s) =>
     models.map((m) => ({
       id: `${s.suite}-${s.arm}-${m.key}`,
       model: m.key,
@@ -185,7 +238,11 @@ const costPoints: CostPoint[] = [
 
 const maxCost = Math.max(...models.map((m) => m.totals.costUsd));
 const issueRuns = (key: ModelKey) =>
-  knownIssues.reduce((n, i) => n + i.byModel[key], 0);
+  cases.flatMap((c) => Object.values(c.runs[key])).filter((r) => r.knownIssue).length;
+const KIND_WORD: Record<string, string> = { case: "cases", skill: "skill", harness: "harness" };
+const issueKinds = Object.keys(KIND_WORD)
+  .filter((k) => knownIssues.some((i) => i.kind === k))
+  .map((k) => KIND_WORD[k]);
 const issueGroups = groups
   .filter((g) => knownIssues.some((i) => cases.find((c) => c.id === i.case)?.group === g.id))
   .map((g) => g.label);
@@ -216,7 +273,7 @@ const indexViews: IndexView[] = [
     id: "setup",
     tab: "By suite and setup",
     title: "by suite and setup",
-    bars: setups.flatMap((s) =>
+    bars: chartSetups.flatMap((s) =>
       models.map((m) => ({
         id: `${s.suite}-${s.arm}-${m.key}`,
         model: m.key,
@@ -248,9 +305,13 @@ const indexViews: IndexView[] = [
   },
 ];
 
-const indexSubtitle = `Traceway agent evals, run ${run.date}. ${joinList(
+const indexSubtitle = `Traceway agent evals, run on ${joinList(runDates)}. ${joinList(
   suites.map((s) => `${s.label} (${s.cases} cases)`),
-)} on ${distinctSetups} setups, ${run.runsPerCase} run per case, graded by deterministic code.`;
+)} on ${distinctSetups} setups, ${run.runsPerCase} run per case, graded by deterministic code.${
+  unchartedSetups
+    ? ` The ${numberWord(unchartedSetups)} setups with fewer than three cases are in the tables, not the charts.`
+    : ""
+}`;
 
 const byPass = [...models].sort((a, b) => b.totals.pass - a.totals.pass);
 const pctText = (pass: number, runs: number) =>
@@ -281,6 +342,12 @@ const perModelRow = (
 const suiteCases = (id: string) => suites.find((s) => s.id === id)!.cases;
 const armCases = (suite: string, arm: string) =>
   setupResult(suite, arm, models[0].key).runs;
+// "13 of 14 cases" when a setup does not run every case of its suite.
+const casesText = (suite: string, arm: string) => {
+  const n = armCases(suite, arm);
+  const all = suiteCases(suite);
+  return n === all ? `${n} cases` : `${n} of ${all} cases`;
+};
 const GROUP_ORDER = [
   "perf-ctl",
   "perf-db",
@@ -315,7 +382,7 @@ const comparisonRows: ComparisonRow[] = [
     ? [
         perModelRow(
           "Root-cause debugging",
-          `debug · ${armCases("debug", "cli+skill")} cases, CLI`,
+          `debug · ${casesText("debug", "cli+skill")}, CLI`,
           (k) => [
             passValue(setupResult("debug", "cli+skill", k), "with the skill"),
             passValue(setupResult("debug", "cli-noskill", k), "without the skill"),
@@ -323,7 +390,7 @@ const comparisonRows: ComparisonRow[] = [
         ),
         perModelRow(
           "Root-cause debugging over MCP",
-          `debug · ${armCases("debug", "mcp")} cases, MCP server`,
+          `debug · ${casesText("debug", "mcp")}, MCP server`,
           (k) => [passValue(setupResult("debug", "mcp", k))],
         ),
       ]
@@ -340,7 +407,7 @@ const comparisonRows: ComparisonRow[] = [
     const g = groupById[id];
     return perModelRow(
       g.label,
-      `${g.id}-* · ${g.cases} cases, ${g.results[models[0].key].runs} runs`,
+      `${g.code} · ${g.cases} cases, ${g.results[models[0].key].runs} runs`,
       (k) => [passValue(g.results[k])],
     );
   }),
@@ -429,7 +496,7 @@ export default function BenchmarksPage() {
                 Pass rate, <em>model by model.</em>
               </>
             }
-            description={`Every model ran the same ${run.runsPerModel} runs. A run passes when its answer is right, its evidence is grounded and its writes are safe. Tool-call counts are reported but never gate.`}
+            description={`Every model ran the same ${run.runsPerModel} runs. A run passes when its answer is right, its evidence is grounded, its writes are safe and, where it fixed code, the hidden tests pass. Tool-call counts are reported but never gate.`}
           />
           <BenchmarkIndexChart views={indexViews} subtitle={indexSubtitle} />
           <div className="mt-8 grid gap-5 md:grid-cols-3">
@@ -513,12 +580,9 @@ export default function BenchmarksPage() {
               {Math.abs(runnerUp.totals.pass - value.totals.pass)}{" "}
               {runnerUp.totals.pass >= value.totals.pass ? "more" : "fewer"} passing
               runs.
-              {best.key !== value.key && best.key !== runnerUp.key
-                ? ` ${best.short} passed ${best.totals.pass - Math.max(value.totals.pass, runnerUp.totals.pass)} more again, for ${Math.round(best.totals.costUsd / value.totals.costUsd)}× ${value.short}'s spend.`
-                : null}{" "}
-              On MCP perf, {value.short} is{" "}
-              {mcpPerf(best.key).mcp - mcpPerf(value.key).mcp}pp behind{" "}
-              {best.short}.
+              {best.key !== value.key
+                ? ` ${best.short} passed ${best.totals.pass - value.totals.pass} more runs than ${value.short}, for ${Math.round(best.totals.costUsd / value.totals.costUsd)}× its spend. On MCP perf, ${value.short} is ${mcpGapText(value.key, best.key)}.`
+                : null}
             </Finding>
             <Finding
               label="03 · The skill"
@@ -542,8 +606,8 @@ export default function BenchmarksPage() {
             </Finding>
             <Finding label="04 · Our bugs" title="Some failures are ours.">
               {capitalize(numberWord(knownIssues.length))} problems behind
-              these failures are in our own cases and skill, not in the models.
-              They account for{" "}
+              these failures are in our own {joinList(issueKinds)}, not in the
+              models. They account for{" "}
               {joinList(
                 models.map(
                   (m, i) =>
@@ -555,7 +619,7 @@ export default function BenchmarksPage() {
             {hasSuite("debug") ? (
               <Finding
                 label="05 · Fixing code"
-                title={`${byDebug[0].short} fixes the most bugs.`}
+                title={`${byDebug[0].short} passes the most debug runs${debugMargin === 1 ? ", by one" : ""}.`}
               >
                 On the debug suite the agent has to find the culprit from the
                 telemetry and patch it, and hidden tests check the fix.{" "}
@@ -565,27 +629,21 @@ export default function BenchmarksPage() {
                       `${m.short} passed ${suitePasses("debug", m.key)} of ${suiteRuns("debug", m.key)}`,
                   ),
                 )}
-                . Backend fixes checked by hidden tests:{" "}
-                {joinList(
-                  models.map(
-                    (m) =>
-                      `${m.short} ${groupById["debug-backend"].results[m.key].pass}/${groupById["debug-backend"].results[m.key].runs}`,
-                  ),
-                )}
-                ; mobile crashes checked statically:{" "}
-                {joinList(
-                  models.map(
-                    (m) =>
-                      `${m.short} ${groupById["debug-mobile"].results[m.key].pass}/${groupById["debug-mobile"].results[m.key].runs}`,
-                  ),
-                )}
-                .{" "}
+                . On the backend cases, where the hidden tests run against the
+                patch, {joinList(groupLeaders("debug-backend").map((m) => m.short))}{" "}
+                {groupLeaders("debug-backend").length === 1 ? "leads" : "lead"}:{" "}
+                {groupCounts("debug-backend")}. On the mobile cases, checked
+                statically: {groupCounts("debug-mobile")}.{" "}
                 {noWrites
-                  ? noWritesClean.length === models.length
-                    ? "Every model handled the cleanup request with a write credential by fixing the code and changing nothing in Traceway."
-                    : noWritesClean.length
-                      ? `Given a write credential and asked to clean up, ${joinList(noWritesClean.map((m) => m.short))} fixed the code and changed nothing in Traceway on both setups; ${joinList(models.filter((m) => !noWritesClean.includes(m)).map((m) => m.short))} did not.`
-                      : "No model handled the cleanup request with a write credential cleanly on both setups."
+                  ? `${
+                      noWritesPassed.length
+                        ? `The cleanup request made with a write credential passed only for ${whereRan(noWritesPassed)}`
+                        : "No model passed the cleanup request made with a write credential"
+                    }; ${
+                      noWritesTouched.length
+                        ? `${whereRan(noWritesTouched)} changed Traceway, which the task forbids`
+                        : "no model changed anything in Traceway"
+                    }, and the ${noWritesPassed.length ? "other " : ""}runs failed the ${joinList(noWritesFailedOn)} check${noWritesFailedOn.length === 1 ? "" : "s"}.`
                   : null}
               </Finding>
             ) : null}
@@ -630,11 +688,17 @@ export default function BenchmarksPage() {
                 Pass rate by suite <em>and setup.</em>
               </>
             }
-            description={`${joinList(
-              suites
-                .filter((s) => s.setups.includes("cli-noskill"))
-                .map((s) => s.label),
-            )} cases run with the CLI and skill, the CLI alone as a control group, and the MCP server. Write cases${
+            description={`${capitalize(
+              joinList(
+                suites
+                  .filter((s) => s.setups.includes("cli-noskill"))
+                  .map((s) =>
+                    armCases(s.id, "cli-noskill") === s.cases
+                      ? `${s.label.toLowerCase()} cases`
+                      : `${armCases(s.id, "cli-noskill")} of the ${s.cases} ${s.label.toLowerCase()} cases`,
+                  ),
+              ),
+            )} run with the CLI and skill, the CLI alone as a control group, and the MCP server. Write cases${
               noWrites ? ", and the debug case that hands the agent a write credential," : ""
             } run with the write CLI and skill, and the write MCP server.`}
           />
@@ -694,9 +758,10 @@ export default function BenchmarksPage() {
             </tbody>
           </DataTable>
           <p className="dim mt-4 text-[0.8125rem]">
-            &ldquo;Right answer + evidence&rdquo; counts runs whose answer and
-            grounding passed, whatever happened to the trajectory check. The
-            differences are in percentage points, computed before rounding.
+            &ldquo;Right answer + evidence&rdquo; counts the passes plus the runs
+            that failed only the trajectory check: their answer, evidence,
+            report, writes and hidden tests all passed. The differences are in
+            percentage points, computed before rounding.
           </p>
         </section>
 
@@ -843,12 +908,12 @@ export default function BenchmarksPage() {
               </tbody>
             </DataTable>
             <p className="dim mt-4 text-[0.8125rem]">
-              Runs went three at a time on one machine
+              Runs went three at a time
               {run.parts.length > 1
                 ? `, in ${numberWord(run.parts.length)} batches (${run.parts
                     .map((p) => partText(p, false))
-                    .join("; ")})`
-                : ""}
+                    .join("; ")}), each batch on one machine`
+                : " on one machine"}
               , so wall time includes some contention.{" "}
               {models
                 .filter((m) => m.totals.judged < m.totals.runs)
@@ -892,9 +957,9 @@ export default function BenchmarksPage() {
           }
           description={`Each task is a fresh Traceway backend seeded with weeks of telemetry from a system broken in one way, plus a planted red herring. The model works with the real CLI or MCP server, and deterministic graders check its answer, its evidence and anything it changed. ${
             run.parts.length > 1
-              ? run.parts.map((p) => capitalize(partText(p, true))).join("; ")
+              ? capitalize(joinList(run.parts.map((p) => partText(p, true))))
               : `All runs on ${run.date}, at commit ${run.commit}`
-          }, ${run.runsPerCase} run per case.${regradedText}`}
+          }; ${run.runsPerCase} run${run.runsPerCase === 1 ? "" : "s"} per case.${regradedText}`}
           cta={
             <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
               <Link
@@ -975,7 +1040,7 @@ function ModelCard({ model, badges }: { model: Model; badges: string[] }) {
         />
       </div>
       <dl className="mt-6 grid gap-3 text-[0.875rem]">
-        <CardStat label="Right answer with evidence" value={`${t.rightAnswerEvidence}/${t.runs}`} />
+        <CardStat label="Right answer and evidence" value={`${t.rightAnswerEvidence}/${t.runs}`} />
         <CardStat label="Agent cost" value={formatUsd(t.costUsd)} />
         <CardStat label="Cost per run" value={formatUsd(t.costPerRunUsd)} />
       </dl>
@@ -1131,7 +1196,15 @@ function SuiteRows({
       />
       {suite.setups.map((arm) => (
         <tr key={arm} style={{ borderTop: "1px solid var(--hair)" }}>
-          <RowHead title={setupLabels[arm]} code={arm} />
+          <RowHead
+            title={setupLabels[arm]}
+            code={arm}
+            sub={
+              armCases(suite.id, arm) === suite.cases
+                ? undefined
+                : `${armCases(suite.id, arm)} of the ${suite.cases} cases`
+            }
+          />
           {models.map((m) => {
             const r = setupResult(suite.id, arm, m.key);
             return (
