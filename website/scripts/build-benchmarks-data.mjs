@@ -534,12 +534,18 @@ function main() {
     if (!kind) throw new Error(`unknown failure_kind ${r.failure_kind}`);
     if ((r.status === "pass") !== (kind === "pass"))
       throw new Error(`${r.case} ${r.model} ${r.arm}: status ${r.status} with kind ${r.failure_kind}`);
+    // A run that ran out of its budget was still graded (its answer check
+    // fails on "no submission"), so on the page it is a failure of kind
+    // budget. Only an infrastructure error or the cost ceiling leaves a run
+    // ungraded.
     return {
       case: r.case,
       suite: r.suite,
       arm: r.arm,
       model: r.model,
-      status: r.status,
+      status: r.status === "pass" ? "pass" : "fail",
+      rawStatus: r.status,
+      graded: r.status !== "infra_error" && r.status !== "cost_ceiling",
       kind,
       graders: r.failed_graders ? r.failed_graders.split("+") : [],
       firstFailure: firstFailureText(r.first_failure),
@@ -615,7 +621,7 @@ function main() {
       providers,
       totals: {
         ...summarize(own),
-        notGraded: own.filter((r) => r.status !== "pass" && r.status !== "fail").length,
+        notGraded: own.filter((r) => !r.graded).length,
         failingGraders,
       },
     };
@@ -772,7 +778,7 @@ function main() {
       harnessUrl: HARNESS_URL,
       methodologyUrl: METHODOLOGY_URL,
       statuses: Object.fromEntries(
-        [...new Set(runs.map((r) => r.status))].map((s) => [s, runs.filter((r) => r.status === s).length]),
+        [...new Set(runs.map((r) => r.rawStatus))].map((s) => [s, runs.filter((r) => r.rawStatus === s).length]),
       ),
     },
     models,
@@ -806,12 +812,15 @@ function crossCheck(data, summaryMd, statsMd) {
       errors.push(`${what}: generated ${got}, report says ${want}`);
   };
 
-  const runsLine = summaryMd.match(/\*\*Runs:\*\* (\d+) \(fail (\d+), pass (\d+)\)/);
+  // "**Runs:** 1204 (budget_exhausted 6, fail 270, pass 928)": one count per
+  // status the harness saw, in its own order.
+  const runsLine = summaryMd.match(/\*\*Runs:\*\* (\d+) \(([^)]*)\)/);
   if (!runsLine) errors.push("summary.md: no Runs line");
   else {
+    const counts = Object.fromEntries(runsLine[2].split(", ").map((x) => x.split(" ")).map(([k, v]) => [k, Number(v)]));
     expect("total runs", data.run.totalRuns, runsLine[1]);
-    expect("failing runs", data.run.statuses.fail ?? 0, runsLine[2]);
-    expect("passing runs", data.run.statuses.pass ?? 0, runsLine[3]);
+    for (const [status, n] of Object.entries(counts)) expect(`${status} runs`, data.run.statuses[status] ?? 0, n);
+    expect("status counts", Object.keys(data.run.statuses).length, Object.keys(counts).length);
   }
 
   const spend = summaryMd.match(/\*\*Spend:\*\* \$([\d.]+) \(judge \$([\d.]+)\)/);
@@ -1147,7 +1156,11 @@ function parseBack(data, markdown, summaryMd) {
   expect("commit", parsed.run.commit, data.run.commit);
   expect("parts", JSON.stringify(parsed.run.parts), JSON.stringify(data.run.parts));
   expect("regraded", parsed.run.regraded ?? null, data.run.regraded);
-  expect("all graded", parsed.run.allGraded, (data.run.statuses.pass ?? 0) + (data.run.statuses.fail ?? 0) === data.run.totalRuns);
+  expect(
+    "all graded",
+    parsed.run.allGraded,
+    (data.run.statuses.pass ?? 0) + (data.run.statuses.fail ?? 0) === data.run.totalRuns,
+  );
   for (const m of data.models) {
     const p = parsed.models.find((x) => x.key === m.key);
     const t = m.totals;
