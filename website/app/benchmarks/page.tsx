@@ -1018,7 +1018,7 @@ export default function BenchmarksPage() {
                 rel="noopener noreferrer"
                 className="btn btn-accent"
               >
-                Methodology and every test case
+                Methodology and cases
                 <ArrowRight className="h-4 w-4" />
               </Link>
               <Link
