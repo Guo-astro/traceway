@@ -15,7 +15,7 @@ export type ComparisonRow = {
   values: Record<ModelKey, ComparisonValue[]>;
 };
 
-export type ComparisonModel = { key: ModelKey; label: string; note: string };
+export type ComparisonModel = { key: ModelKey; label: string; short: string; note: string };
 
 function bestOf(row: ComparisonRow, models: ComparisonModel[], i: number) {
   const vs = models.map((m) => row.values[m.key][i].value);
@@ -31,12 +31,14 @@ export function BenchmarkComparisonTable({
 }) {
   const featured = models[0].key;
   const outline = "color-mix(in oklab, var(--a1) 70%, transparent)";
+  // Past five models the full names no longer fit side by side.
+  const compact = models.length > 5;
 
   return (
     <div className="overflow-x-auto">
       <table
         className="w-full border-separate text-left"
-        style={{ borderSpacing: 0, minWidth: 200 + models.length * 120 }}
+        style={{ borderSpacing: 0, minWidth: 200 + models.length * (compact ? 96 : 120) }}
       >
         <thead>
           <tr>
@@ -61,13 +63,16 @@ export function BenchmarkComparisonTable({
                       : undefined
                   }
                 >
-                  <span className="inline-flex items-center gap-2 text-[0.9375rem] font-medium text-fg-0 md:text-[1.0625rem]">
+                  <span
+                    className="inline-flex items-center gap-2 text-[0.9375rem] font-medium whitespace-nowrap text-fg-0 md:text-[1.0625rem]"
+                    title={m.label}
+                  >
                     <span
                       aria-hidden
                       className="inline-block h-2.5 w-2.5 rounded-full"
                       style={{ background: MODEL_COLOR[m.key] }}
                     />
-                    {m.label}
+                    {compact ? m.short : m.label}
                   </span>
                   <span className="block font-mono text-[0.6875rem] text-fg-3">
                     {m.note}

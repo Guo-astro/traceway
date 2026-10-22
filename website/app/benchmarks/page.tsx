@@ -527,6 +527,7 @@ export default function BenchmarksPage() {
             models={byPass.map((m) => ({
               key: m.key,
               label: m.label,
+              short: m.short,
               note: m.weights === "open" ? "open weights" : m.vendor,
             }))}
             rows={comparisonRows}
@@ -1129,8 +1130,8 @@ function Th({ children }: { children: React.ReactNode }) {
   return (
     <th
       scope="col"
-      className="px-5 py-3.5 align-bottom font-mono text-[0.6875rem] font-medium uppercase tracking-[0.1em] text-fg-3"
-      style={{ borderBottom: "1px solid var(--hair-2)" }}
+      className="sticky left-0 z-10 px-5 py-3.5 align-bottom font-mono text-[0.6875rem] font-medium uppercase tracking-[0.1em] text-fg-3"
+      style={{ borderBottom: "1px solid var(--hair-2)", background: "var(--ink-0)" }}
     >
       {children}
     </th>
@@ -1168,7 +1169,11 @@ function RowHead({
   description?: string;
 }) {
   return (
-    <th scope="row" className="min-w-[190px] px-5 py-4 align-top font-normal">
+    <th
+      scope="row"
+      className="sticky left-0 z-10 min-w-[190px] px-5 py-4 align-top font-normal"
+      style={{ background: "var(--ink-0)" }}
+    >
       <span className="block text-[0.9375rem] font-semibold text-fg-0">
         {title}
       </span>
@@ -1197,7 +1202,7 @@ function SubheadRow({ label, span }: { label: string; span: number }) {
         colSpan={span}
         className="px-5 pt-5 pb-1 font-mono text-[0.6875rem] font-medium uppercase tracking-[0.14em] text-fg-3"
       >
-        {label}
+        <span className="sticky left-5 inline-block">{label}</span>
       </th>
     </tr>
   );
@@ -1318,7 +1323,11 @@ function DeltaRow({
 function MetricRow({ label, values }: { label: string; values: string[] }) {
   return (
     <tr style={{ borderTop: "1px solid var(--hair)" }}>
-      <th scope="row" className="min-w-[190px] px-5 py-3.5 text-[0.9375rem] font-normal text-fg-1">
+      <th
+        scope="row"
+        className="sticky left-0 z-10 min-w-[190px] px-5 py-3.5 text-[0.9375rem] font-normal text-fg-1"
+        style={{ background: "var(--ink-0)" }}
+      >
         {label}
       </th>
       {values.map((v, i) => (

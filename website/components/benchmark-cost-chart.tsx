@@ -71,6 +71,31 @@ export function BenchmarkCostChart({
   ];
   const activePoint = points.find((p) => p.id === active) ?? null;
 
+  // Direct labels for the all-runs dots, pushed apart so none covers another.
+  const LABEL_H = 15;
+  const labelText = (p: CostPoint) =>
+    `${width < 560 ? p.modelShort : p.modelLabel} · ${rate(p.pass, p.runs)}%`;
+  const placed: { id: string; x0: number; x1: number; y: number }[] = [];
+  const labels = new Map<string, { x: number; y: number; anchor: "start" | "end" }>();
+  for (const p of [...points.filter((p) => p.overall)].sort(
+    (a, b) => y((100 * a.pass) / a.runs) - y((100 * b.pass) / b.runs),
+  )) {
+    const cx = x(p.costPerRunUsd);
+    const cy = y((100 * p.pass) / p.runs);
+    const w = labelText(p).length * 6.6;
+    const left = cx > MARGIN.left + plotW * 0.62;
+    const x0 = left ? cx - 14 - w : cx + 14;
+    const x1 = x0 + w;
+    let ly = cy;
+    for (let guard = 0; guard < 20; guard++) {
+      const hit = placed.find((q) => q.x0 < x1 && x0 < q.x1 && Math.abs(q.y - ly) < LABEL_H);
+      if (!hit) break;
+      ly = hit.y + LABEL_H;
+    }
+    placed.push({ id: p.id, x0, x1, y: ly });
+    labels.set(p.id, { x: left ? cx - 14 : cx + 14, y: ly, anchor: left ? "end" : "start" });
+  }
+
   return (
     <div>
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-[0.8125rem] text-fg-1">
@@ -180,19 +205,33 @@ export function BenchmarkCostChart({
                   stroke="var(--ink-0)"
                   strokeWidth={2}
                 />
-                {p.overall ? (
-                  <text
-                    x={labelLeft ? cx - 14 : cx + 14}
-                    y={cy}
-                    dy="0.32em"
-                    textAnchor={labelLeft ? "end" : "start"}
-                    fontSize={12}
-                    fill="var(--fg-0)"
-                    fontWeight={600}
-                  >
-                    {width < 560 ? p.modelShort : p.modelLabel} ·{" "}
-                    {rate(p.pass, p.runs)}%
-                  </text>
+                {p.overall && labels.get(p.id) ? (
+                  <>
+                    {Math.abs(labels.get(p.id)!.y - cy) > 6 ? (
+                      <line
+                        x1={cx}
+                        y1={cy}
+                        x2={labels.get(p.id)!.x + (labelLeft ? 4 : -4)}
+                        y2={labels.get(p.id)!.y}
+                        stroke="var(--fg-3)"
+                        strokeWidth={1}
+                      />
+                    ) : null}
+                    <text
+                      x={labels.get(p.id)!.x}
+                      y={labels.get(p.id)!.y}
+                      dy="0.32em"
+                      textAnchor={labels.get(p.id)!.anchor}
+                      fontSize={12}
+                      fill="var(--fg-0)"
+                      fontWeight={600}
+                      stroke="var(--ink-0)"
+                      strokeWidth={3}
+                      paintOrder="stroke"
+                    >
+                      {labelText(p)}
+                    </text>
+                  </>
                 ) : null}
                 <circle
                   cx={cx}
