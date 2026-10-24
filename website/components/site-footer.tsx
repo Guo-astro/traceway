@@ -3,6 +3,7 @@ import Image from "next/image";
 import { Github } from "lucide-react";
 import { DiscordIcon } from "@/components/discord-icon";
 import { GITHUB_URL, DISCORD_URL } from "@/lib/links";
+import { CookieSettingsLink } from "@/components/cookie-settings-link";
 
 type Column = {
   heading: string;
@@ -54,10 +55,11 @@ const COLUMNS: Column[] = [
     ],
   },
   {
-    heading: "About",
+    heading: "Legal",
     links: [
       { label: "Privacy Policy", href: "/privacy-policy" },
       { label: "Terms of Use", href: "/terms-of-use" },
+      { label: "Data Processing Addendum", href: "/dpa" },
       { label: "Contact", href: "/contact" },
     ],
   },
@@ -128,6 +130,14 @@ export function SiteFooter() {
                     </Link>
                   </li>
                 ))}
+                {col.heading === "Legal" ? (
+                  <li>
+                    <CookieSettingsLink
+                      className="text-[13px] inline-block py-1 transition-colors hover:text-[color:var(--fg-0)] cursor-pointer"
+                      style={{ color: "var(--fg-1)" }}
+                    />
+                  </li>
+                ) : null}
               </ul>
             </div>
           ))}

@@ -1,9 +1,9 @@
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 import { MotionPolish } from "@/components/motion-polish";
+import { CookieConsent } from "@/components/cookie-consent";
 import type { Metadata } from "next";
 import { JetBrains_Mono, IBM_Plex_Mono, Inter } from "next/font/google";
-import Script from "next/script";
 import "./globals.css";
 
 // Dark-only site, no theme toggle.
@@ -55,23 +55,12 @@ export default function RootLayout({
       lang="en"
       className={`${jetbrainsMono.variable} ${ibmPlexMono.variable} ${inter.variable}`}
     >
-      <Script
-        src="https://www.googletagmanager.com/gtag/js?id=G-KSB465GF2W"
-        strategy="afterInteractive"
-      />
-      <Script id="gtag-init" strategy="afterInteractive">
-        {`
-          window.dataLayer = window.dataLayer || [];
-          function gtag(){dataLayer.push(arguments);}
-          gtag('js', new Date());
-          gtag('config', 'G-KSB465GF2W');
-        `}
-      </Script>
       <body className="antialiased">
         <SiteHeader />
         {children}
         <SiteFooter />
         <MotionPolish />
+        <CookieConsent />
       </body>
     </html>
   );
