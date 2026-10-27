@@ -64,6 +64,9 @@ type Cfg struct {
 	NotificationPollSeconds string
 	OncallPollSeconds       string
 	OutboxPollSeconds       string
+	SLOPollSeconds          string
+	SLOComputeWorkers       string
+	SLOComputeTimeoutSecs   string
 
 	SyntheticsPollSeconds             string
 	SyntheticsBrowserMode             string
@@ -264,6 +267,9 @@ func LoadFromEnv() *Cfg {
 		NotificationPollSeconds: os.Getenv("NOTIFICATION_POLL_SECONDS"),
 		OncallPollSeconds:       os.Getenv("ONCALL_POLL_SECONDS"),
 		OutboxPollSeconds:       os.Getenv("OUTBOX_POLL_SECONDS"),
+		SLOPollSeconds:          os.Getenv("SLO_POLL_SECONDS"),
+		SLOComputeWorkers:       os.Getenv("SLO_COMPUTE_WORKERS"),
+		SLOComputeTimeoutSecs:   os.Getenv("SLO_COMPUTE_TIMEOUT_SECONDS"),
 
 		SyntheticsPollSeconds:             os.Getenv("SYNTHETICS_POLL_SECONDS"),
 		SyntheticsBrowserMode:             os.Getenv("SYNTHETICS_BROWSER_MODE"),

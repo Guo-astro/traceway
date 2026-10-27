@@ -1,19 +1,23 @@
 package controllers
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/tracewayapp/traceway/backend/app/db"
 	"github.com/tracewayapp/traceway/backend/app/middleware"
 	"github.com/tracewayapp/traceway/backend/app/models"
 	"github.com/tracewayapp/traceway/backend/app/notifications"
+	"github.com/tracewayapp/traceway/backend/app/oncall"
 	"github.com/tracewayapp/traceway/backend/app/repositories/transactional"
 	traceway "go.tracewayapp.com"
 )
@@ -41,6 +45,8 @@ var validRuleTypes = map[string]bool{
 	"ai_conversation_cost":    true,
 	"ai_flagged_content":      true,
 	"check_down":              true,
+	"slo_burn_rate":           true,
+	"slo_budget_consumed":     true,
 }
 
 func (ctrl *notificationRuleController) List(ctx *gin.Context) {
@@ -119,6 +125,15 @@ func (ctrl *notificationRuleController) Create(ctx *gin.Context) {
 	}
 	if channel == nil || channel.ProjectId != projectId {
 		ctx.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Channel not found in this project."})
+		return
+	}
+	message, err := validateSLORuleConfig(tx, projectId, req.RuleType, req.Config)
+	if err != nil {
+		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to validate the SLO rule: %w", err))
+		return
+	}
+	if message != "" {
+		ctx.JSON(http.StatusUnprocessableEntity, gin.H{"error": message})
 		return
 	}
 
@@ -216,10 +231,27 @@ func (ctrl *notificationRuleController) Update(ctx *gin.Context) {
 		ctx.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Channel not found in this project."})
 		return
 	}
+	message, err := validateSLORuleConfig(tx, projectId, req.RuleType, req.Config)
+	if err != nil {
+		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to validate the SLO rule: %w", err))
+		return
+	}
+	if message != "" {
+		ctx.JSON(http.StatusUnprocessableEntity, gin.H{"error": message})
+		return
+	}
 
 	cooldown := req.CooldownMinutes
 	if cooldown <= 0 {
 		cooldown = 15
+	}
+
+	conditionChanged := existing.RuleType != req.RuleType || existing.ChannelId != req.ChannelId || !sameRuleConfig(existing.Config, req.Config)
+	if conditionChanged {
+		if err := resolveSLORulePage(tx, existing); err != nil {
+			ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to resolve the page of the edited rule: %w", err))
+			return
+		}
 	}
 
 	existing.ChannelId = req.ChannelId
@@ -234,7 +266,13 @@ func (ctrl *notificationRuleController) Update(ctx *gin.Context) {
 		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to update notification rule: %w", err))
 		return
 	}
-	notifications.ClearRuleState(id)
+	if conditionChanged {
+		notifications.ClearRuleState(id)
+		if err := transactional.NotificationRuleStateRepository.Delete(tx, id); err != nil {
+			ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to reset notification rule state: %w", err))
+			return
+		}
+	}
 
 	ctx.JSON(http.StatusOK, existing)
 }
@@ -264,6 +302,10 @@ func (ctrl *notificationRuleController) Delete(ctx *gin.Context) {
 		return
 	}
 
+	if err := resolveSLORulePage(tx, existing); err != nil {
+		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to resolve the page of the deleted rule: %w", err))
+		return
+	}
 	if err := transactional.NotificationRuleRepository.Delete(tx, id); err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to delete notification rule: %w", err))
 		return
@@ -312,6 +354,12 @@ func (ctrl *notificationRuleController) Toggle(ctx *gin.Context) {
 	newEnabled := !existing.Enabled
 	if req.Enabled != nil {
 		newEnabled = *req.Enabled
+	}
+	if !newEnabled {
+		if err := resolveSLORulePage(tx, existing); err != nil {
+			ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to resolve the page of the disabled rule: %w", err))
+			return
+		}
 	}
 	if err := transactional.NotificationRuleRepository.UpdateEnabled(tx, id, newEnabled); err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to toggle notification rule: %w", err))
@@ -373,3 +421,74 @@ func (ctrl *notificationRuleController) Snooze(ctx *gin.Context) {
 }
 
 var NotificationRuleController = notificationRuleController{}
+
+func validateSLORuleConfig(tx *sql.Tx, projectId uuid.UUID, ruleType string, config json.RawMessage) (string, error) {
+	switch ruleType {
+	case "slo_burn_rate":
+		var cfg struct {
+			SloId              int     `json:"sloId"`
+			LongWindowMinutes  int     `json:"longWindowMinutes"`
+			ShortWindowMinutes int     `json:"shortWindowMinutes"`
+			BurnRateThreshold  float64 `json:"burnRateThreshold"`
+		}
+		if err := json.Unmarshal(config, &cfg); err != nil {
+			return "The rule configuration is not valid JSON.", nil
+		}
+		if cfg.LongWindowMinutes < 5 || cfg.LongWindowMinutes > 10080 {
+			return "Long window must be between 5 minutes and 7 days.", nil
+		}
+		if cfg.ShortWindowMinutes < 1 || cfg.ShortWindowMinutes >= cfg.LongWindowMinutes {
+			return "Short window must be at least 1 minute and shorter than the long window.", nil
+		}
+		if cfg.BurnRateThreshold <= 0 {
+			return "Burn rate threshold must be above 0.", nil
+		}
+		return validateRuleSLO(tx, projectId, cfg.SloId)
+	case "slo_budget_consumed":
+		var cfg struct {
+			SloId           int     `json:"sloId"`
+			ConsumedPercent float64 `json:"consumedPercent"`
+		}
+		if err := json.Unmarshal(config, &cfg); err != nil {
+			return "The rule configuration is not valid JSON.", nil
+		}
+		if cfg.ConsumedPercent <= 0 || cfg.ConsumedPercent > 100 {
+			return "Budget consumed must be between 1 and 100 percent.", nil
+		}
+		return validateRuleSLO(tx, projectId, cfg.SloId)
+	}
+	return "", nil
+}
+
+func resolveSLORulePage(tx *sql.Tx, rule *models.NotificationRule) error {
+	sloId := sloRuleTarget(rule.RuleType, rule.Config)
+	if sloId == 0 {
+		return nil
+	}
+	if _, err := oncall.AutoResolveByDedupKeyTx(tx, rule.Id, notifications.SLODedupToken(sloId), time.Now().UTC()); err != nil {
+		return err
+	}
+	return transactional.NotificationRuleStateRepository.Delete(tx, rule.Id)
+}
+
+func sameRuleConfig(a, b json.RawMessage) bool {
+	var left, right any
+	if json.Unmarshal(a, &left) != nil || json.Unmarshal(b, &right) != nil {
+		return false
+	}
+	return reflect.DeepEqual(left, right)
+}
+
+func validateRuleSLO(tx *sql.Tx, projectId uuid.UUID, sloId int) (string, error) {
+	if sloId < 1 {
+		return "Select an SLO.", nil
+	}
+	entity, err := transactional.SLORepository.FindByIdForProject(tx, sloId, projectId)
+	if err != nil {
+		return "", err
+	}
+	if entity == nil {
+		return "SLO not found in this project.", nil
+	}
+	return "", nil
+}

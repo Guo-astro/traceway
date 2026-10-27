@@ -3,6 +3,7 @@
 	import { useSidebar } from '$lib/components/ui/sidebar';
 	import { oncallState } from '$lib/state/oncall.svelte';
 	import { monitorsState } from '$lib/state/monitors.svelte';
+	import { slosState } from '$lib/state/slos.svelte';
 	import { organizationContext } from '$lib/state/organization-context.svelte';
 	import {
 		Activity,
@@ -17,6 +18,7 @@
 		Flame,
 		FolderKanban,
 		Gauge,
+		Goal,
 		ListEnd,
 		PhoneCall,
 		Server,
@@ -90,6 +92,7 @@
 			title: 'Monitors',
 			stickyParams: ['preset', 'from', 'to']
 		},
+		{ Icon: Goal, href: '/slos', title: 'SLOs', stickyParams: [] },
 		{ Icon: Bell, href: '/notifications', title: 'Alerts', stickyParams: ['preset', 'from', 'to'] },
 		{ Icon: PhoneCall, href: '/on-call', title: 'On-Call', stickyParams: [] },
 		{ Icon: Link2, href: '/connection', title: 'Connection', stickyParams: [] }
@@ -206,6 +209,9 @@
 				? organizationContext.openPagesCount
 				: oncallState.openPagesCount;
 		}
+		if (item.title === 'SLOs') {
+			return organizationContext.active ? 0 : slosState.breachedCount;
+		}
 		return 0;
 	}
 
@@ -215,11 +221,14 @@
 		const projectId = projectsState.currentProjectId;
 		if (!projectId) return;
 		const hasMonitors = sidebarItems.some((item) => item.title === 'Monitors');
+		const hasSlos = sidebarItems.some((item) => item.title === 'SLOs');
 		oncallState.refreshOpenCount();
 		if (hasMonitors) monitorsState.refreshDownCount();
+		if (hasSlos) slosState.refreshBreachedCount();
 		const interval = setInterval(() => {
 			oncallState.refreshOpenCount();
 			if (hasMonitors) monitorsState.refreshDownCount();
+			if (hasSlos) slosState.refreshBreachedCount();
 		}, 60000);
 		return () => clearInterval(interval);
 	});

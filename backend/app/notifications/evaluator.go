@@ -77,7 +77,7 @@ func evaluatePolledRules(ctx context.Context) {
 			continue
 		}
 
-		if !cooldowns.canFire(rule.Id, rule.CooldownMinutes) {
+		if !statefulRuleTypes[rule.RuleType] && !cooldowns.canFire(rule.Id, rule.CooldownMinutes) {
 			continue
 		}
 
@@ -106,13 +106,17 @@ func evaluatePolledRules(ctx context.Context) {
 			continue
 		}
 
+		if result != nil && result.Recovered {
+			dispatchRecovery(rule, result.Message)
+			continue
+		}
 		if result != nil && result.Fired {
 			if len(result.Messages) > 0 {
 				for _, msg := range result.Messages {
 					dispatch(rule, msg)
 				}
-			} else {
-				dispatch(rule, result.Message)
+			} else if !dispatch(rule, result.Message) && statefulRuleTypes[rule.RuleType] {
+				rollBackRuleState(rule.Id)
 			}
 		}
 	}
