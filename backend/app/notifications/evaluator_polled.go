@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -219,11 +221,12 @@ func evaluateApdexDrop(ctx context.Context, rule *models.NotificationRule, proje
 // --- Metric Threshold ---
 
 type metricThresholdConfig struct {
-	MetricName      string  `json:"metricName"`
-	Operator        string  `json:"operator"`
-	ThresholdValue  float64 `json:"thresholdValue"`
-	Aggregation     string  `json:"aggregation"`
-	LookbackMinutes int     `json:"lookbackMinutes"`
+	MetricName      string            `json:"metricName"`
+	Operator        string            `json:"operator"`
+	ThresholdValue  float64           `json:"thresholdValue"`
+	Aggregation     string            `json:"aggregation"`
+	LookbackMinutes int               `json:"lookbackMinutes"`
+	Tags            map[string]string `json:"tags"`
 }
 
 func evaluateMetricThreshold(ctx context.Context, rule *models.NotificationRule, projectId uuid.UUID) (*EvalResult, error) {
@@ -256,6 +259,10 @@ func evaluateMetricThreshold(ctx context.Context, rule *models.NotificationRule,
 
 	query := fmt.Sprintf("SELECT count(), %s FROM metric_points WHERE project_id = ? AND name = ? AND recorded_at >= ? AND recorded_at <= ?", selectExpr)
 	args := []interface{}{projectId, cfg.MetricName, from, now}
+	for _, k := range slices.Sorted(maps.Keys(cfg.Tags)) {
+		query += " AND tags[?] = ?"
+		args = append(args, k, cfg.Tags[k])
+	}
 
 	var count uint64
 	var value float64

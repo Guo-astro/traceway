@@ -271,8 +271,11 @@ Fires when an aggregated [metric](/learn/metrics) value violates the configured 
 | Operator | gt | One of `gt`, `gte`, `lt`, `lte`, `eq` |
 | Threshold Value | 90 | The value compared against the aggregate |
 | Lookback Minutes | 5 | Window the aggregate is computed over |
+| Tag Filters | | Optional `key=value` pairs, comma-separated. Only points whose tags match every pair count. Up to 20 |
 
-The aggregation spans every series of the metric name, with no tag filter. For metrics tagged per host, per disk, or per table, an `avg` can hide one bad series behind healthy ones; prefer `max` (or `min` for lower-is-bad metrics) so the worst series drives the alert.
+Without tag filters the aggregation spans every series of the metric name. Use a filter to watch one slice, such as `outcome=failed` or `host.name=web-1`. For metrics tagged per host, per disk, or per table, an `avg` can hide one bad series behind healthy ones. Prefer `max` (or `min` for lower-is-bad metrics) so the worst series drives the alert.
+
+Over the API the filters are the `tags` object of the rule config, for example `"tags": {"outcome": "failed"}`. An empty key or value answers 422.
 
 ### No Data
 

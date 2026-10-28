@@ -77,6 +77,7 @@
 	let operator = $state('gt');
 	let thresholdValue = $state(90);
 	let aggregation = $state('avg');
+	let metricTags = $state('');
 	let dataType = $state('any');
 	let silenceMinutes = $state(10);
 	let thresholdCount = $state(100);
@@ -263,6 +264,7 @@
 		operator = 'gt';
 		thresholdValue = 90;
 		aggregation = 'avg';
+		metricTags = '';
 		dataType = 'any';
 		silenceMinutes = 10;
 		thresholdCount = 100;
@@ -310,6 +312,9 @@
 				operator = cfg.operator ?? 'gt';
 				thresholdValue = cfg.thresholdValue ?? 90;
 				aggregation = cfg.aggregation ?? 'avg';
+				metricTags = Object.entries(cfg.tags ?? {})
+					.map(([k, v]) => `${k}=${v}`)
+					.join(', ');
 				lookbackMinutes = cfg.lookbackMinutes ?? 5;
 				break;
 			case 'no_data':
@@ -373,6 +378,17 @@
 		}
 	}
 
+	function parseMetricTags(value: string): Record<string, string> {
+		const tags: Record<string, string> = {};
+		for (const part of value.split(',')) {
+			if (!part.trim()) continue;
+			const eq = part.indexOf('=');
+			const key = (eq === -1 ? part : part.slice(0, eq)).trim();
+			tags[key] = eq === -1 ? '' : part.slice(eq + 1).trim();
+		}
+		return tags;
+	}
+
 	function buildConfig(): NotificationRuleConfig {
 		switch (ruleType) {
 			case 'error_rate_threshold':
@@ -383,7 +399,14 @@
 			case 'apdex_drop':
 				return { thresholdApdex, lookbackMinutes, minRequests };
 			case 'metric_threshold':
-				return { metricName, operator, thresholdValue, aggregation, lookbackMinutes, tags: {} };
+				return {
+					metricName,
+					operator,
+					thresholdValue,
+					aggregation,
+					lookbackMinutes,
+					tags: parseMetricTags(metricTags)
+				};
 			case 'no_data':
 				return { dataType, silenceMinutes };
 			case 'error_count_threshold':
@@ -642,6 +665,14 @@
 					<div class="space-y-2">
 						<Label for="cfg-lookback-m">Lookback (minutes)</Label>
 						<Input id="cfg-lookback-m" type="number" bind:value={lookbackMinutes} min="1" />
+					</div>
+					<div class="space-y-2">
+						<Label for="cfg-metric-tags">Tag Filters (optional, comma-separated)</Label>
+						<Input
+							id="cfg-metric-tags"
+							bind:value={metricTags}
+							placeholder="outcome=failed, host.name=web-1"
+						/>
 					</div>
 				{:else if ruleType === 'no_data'}
 					<div class="space-y-2">

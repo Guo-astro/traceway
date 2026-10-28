@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"reflect"
@@ -127,9 +128,9 @@ func (ctrl *notificationRuleController) Create(ctx *gin.Context) {
 		ctx.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Channel not found in this project."})
 		return
 	}
-	message, err := validateSLORuleConfig(tx, projectId, req.RuleType, req.Config)
+	message, err := validateRuleConfig(tx, projectId, req.RuleType, req.Config)
 	if err != nil {
-		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to validate the SLO rule: %w", err))
+		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to validate the rule: %w", err))
 		return
 	}
 	if message != "" {
@@ -231,9 +232,9 @@ func (ctrl *notificationRuleController) Update(ctx *gin.Context) {
 		ctx.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Channel not found in this project."})
 		return
 	}
-	message, err := validateSLORuleConfig(tx, projectId, req.RuleType, req.Config)
+	message, err := validateRuleConfig(tx, projectId, req.RuleType, req.Config)
 	if err != nil {
-		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to validate the SLO rule: %w", err))
+		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to validate the rule: %w", err))
 		return
 	}
 	if message != "" {
@@ -422,8 +423,25 @@ func (ctrl *notificationRuleController) Snooze(ctx *gin.Context) {
 
 var NotificationRuleController = notificationRuleController{}
 
-func validateSLORuleConfig(tx *sql.Tx, projectId uuid.UUID, ruleType string, config json.RawMessage) (string, error) {
+const maxMetricRuleTagFilters = 20
+
+func validateRuleConfig(tx *sql.Tx, projectId uuid.UUID, ruleType string, config json.RawMessage) (string, error) {
 	switch ruleType {
+	case "metric_threshold":
+		var cfg struct {
+			Tags map[string]string `json:"tags"`
+		}
+		if err := json.Unmarshal(config, &cfg); err != nil {
+			return "The rule configuration is not valid JSON.", nil
+		}
+		if len(cfg.Tags) > maxMetricRuleTagFilters {
+			return fmt.Sprintf("A metric rule can filter on at most %d tags.", maxMetricRuleTagFilters), nil
+		}
+		for k, v := range cfg.Tags {
+			if strings.TrimSpace(k) == "" || strings.TrimSpace(v) == "" {
+				return "Every tag filter needs a key and a value.", nil
+			}
+		}
 	case "slo_burn_rate":
 		var cfg struct {
 			SloId              int     `json:"sloId"`

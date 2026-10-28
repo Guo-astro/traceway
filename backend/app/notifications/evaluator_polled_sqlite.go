@@ -7,6 +7,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -241,11 +243,12 @@ func evaluateApdexDrop(ctx context.Context, rule *models.NotificationRule, proje
 // --- Metric Threshold ---
 
 type metricThresholdConfig struct {
-	MetricName      string  `json:"metricName"`
-	Operator        string  `json:"operator"`
-	ThresholdValue  float64 `json:"thresholdValue"`
-	Aggregation     string  `json:"aggregation"`
-	LookbackMinutes int     `json:"lookbackMinutes"`
+	MetricName      string            `json:"metricName"`
+	Operator        string            `json:"operator"`
+	ThresholdValue  float64           `json:"thresholdValue"`
+	Aggregation     string            `json:"aggregation"`
+	LookbackMinutes int               `json:"lookbackMinutes"`
+	Tags            map[string]string `json:"tags"`
 }
 
 func evaluateMetricThreshold(ctx context.Context, rule *models.NotificationRule, projectId uuid.UUID) (*EvalResult, error) {
@@ -260,14 +263,24 @@ func evaluateMetricThreshold(ctx context.Context, rule *models.NotificationRule,
 	now := time.Now().UTC()
 	from := now.Add(-time.Duration(cfg.LookbackMinutes) * time.Minute)
 
+	where := "project_id = ? AND name = ? AND recorded_at >= ? AND recorded_at <= ?"
+	args := []interface{}{projectId.String(), cfg.MetricName, from.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)}
+	tagExtract := "json_extract"
+	if db.IsDuckDBTelemetry() {
+		tagExtract = "json_extract_string"
+	}
+	for _, k := range slices.Sorted(maps.Keys(cfg.Tags)) {
+		where += " AND " + tagExtract + "(tags, '$.\"' || ? || '\"') = ?"
+		args = append(args, k, cfg.Tags[k])
+	}
+
 	var value float64
 	var err error
 
 	switch cfg.Aggregation {
 	case "last":
 		err = db.TelemetryDB.QueryRowContext(ctx,
-			"SELECT value FROM metric_points WHERE project_id = ? AND name = ? AND recorded_at >= ? AND recorded_at <= ? ORDER BY recorded_at DESC LIMIT 1",
-			projectId.String(), cfg.MetricName, from.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)).Scan(&value)
+			"SELECT value FROM metric_points WHERE "+where+" ORDER BY recorded_at DESC LIMIT 1", args...).Scan(&value)
 		if err == sql.ErrNoRows {
 			return &EvalResult{Fired: false}, nil
 		}
@@ -280,8 +293,7 @@ func evaluateMetricThreshold(ctx context.Context, rule *models.NotificationRule,
 			pct = 0.99
 		}
 		rows, qErr := db.TelemetryDB.QueryContext(ctx,
-			"SELECT value FROM metric_points WHERE project_id = ? AND name = ? AND recorded_at >= ? AND recorded_at <= ? ORDER BY value ASC",
-			projectId.String(), cfg.MetricName, from.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+			"SELECT value FROM metric_points WHERE "+where+" ORDER BY value ASC", args...)
 		if qErr != nil {
 			return nil, qErr
 		}
@@ -308,9 +320,9 @@ func evaluateMetricThreshold(ctx context.Context, rule *models.NotificationRule,
 		case "sum":
 			aggFunc = "sum"
 		}
-		query := fmt.Sprintf("SELECT COUNT(value), COALESCE(%s(value), 0) FROM metric_points WHERE project_id = ? AND name = ? AND recorded_at >= ? AND recorded_at <= ?", aggFunc)
+		query := fmt.Sprintf("SELECT COUNT(value), COALESCE(%s(value), 0) FROM metric_points WHERE %s", aggFunc, where)
 		var count int64
-		err = db.TelemetryDB.QueryRowContext(ctx, query, projectId.String(), cfg.MetricName, from.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)).Scan(&count, &value)
+		err = db.TelemetryDB.QueryRowContext(ctx, query, args...).Scan(&count, &value)
 		if err != nil {
 			return nil, err
 		}

@@ -210,6 +210,68 @@ func setupNotificationsTestDB(t *testing.T) {
 	)`); err != nil {
 		t.Fatalf("failed to create exceptions_v2 table: %v", err)
 	}
+
+	if _, err := telemetryDB.Exec(`CREATE TABLE metric_points (
+		project_id TEXT NOT NULL,
+		name TEXT NOT NULL DEFAULT '',
+		value REAL NOT NULL DEFAULT 0,
+		tags TEXT NOT NULL DEFAULT '{}',
+		recorded_at DATETIME NOT NULL
+	)`); err != nil {
+		t.Fatalf("failed to create metric_points table: %v", err)
+	}
+}
+
+func TestEvaluateMetricThresholdTagFilter(t *testing.T) {
+	setupNotificationsTestDB(t)
+
+	ctx := context.Background()
+	projectId := uuid.New()
+	ts := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano)
+	for _, p := range []struct {
+		value float64
+		tags  string
+	}{
+		{3, `{"outcome":"healed","host":"fw1"}`},
+		{4, `{"outcome":"healed","host":"fw2"}`},
+		{2, `{"outcome":"failed","host":"fw1"}`},
+	} {
+		if _, err := db.TelemetryDB.Exec(
+			"INSERT INTO metric_points (project_id, name, value, tags, recorded_at) VALUES (?, ?, ?, ?, ?)",
+			projectId.String(), "syslogd_heal_total", p.value, p.tags, ts); err != nil {
+			t.Fatalf("failed to insert metric point: %v", err)
+		}
+	}
+
+	cases := []struct {
+		name      string
+		agg       string
+		tags      string
+		threshold float64
+		fired     bool
+	}{
+		{"no filter sums every series", "sum", `{}`, 8, true},
+		{"filter keeps only matching series", "sum", `{"outcome":"failed"}`, 2, false},
+		{"filter fires on matching series", "sum", `{"outcome":"failed"}`, 1, true},
+		{"every filter must match", "max", `{"outcome":"healed","host":"fw1"}`, 3, false},
+		{"no matching series never fires", "sum", `{"outcome":"unknown"}`, -1, false},
+		{"last honors the filter", "last", `{"host":"fw2"}`, 3.5, true},
+		{"percentile honors the filter", "p95", `{"outcome":"failed"}`, 2, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rule := &models.NotificationRule{
+				Config: json.RawMessage(fmt.Sprintf(`{"metricName":"syslogd_heal_total","aggregation":%q,"operator":"gt","thresholdValue":%v,"lookbackMinutes":5,"tags":%s}`, tc.agg, tc.threshold, tc.tags)),
+			}
+			result, err := evaluateMetricThreshold(ctx, rule, projectId)
+			if err != nil {
+				t.Fatalf("evaluateMetricThreshold failed: %v", err)
+			}
+			if result.Fired != tc.fired {
+				t.Errorf("fired = %v, want %v", result.Fired, tc.fired)
+			}
+		})
+	}
 }
 
 func TestEvaluateTaskFailureRate(t *testing.T) {
