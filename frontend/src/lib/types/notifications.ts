@@ -38,6 +38,7 @@ export type NotificationRuleConfig = {
 	thresholdValue?: number;
 	aggregation?: string;
 	tags?: Record<string, string>;
+	groupBy?: string[];
 	dataType?: string;
 	silenceMinutes?: number;
 	thresholdCount?: number;

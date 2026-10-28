@@ -220,22 +220,10 @@ func evaluateApdexDrop(ctx context.Context, rule *models.NotificationRule, proje
 
 // --- Metric Threshold ---
 
-type metricThresholdConfig struct {
-	MetricName      string            `json:"metricName"`
-	Operator        string            `json:"operator"`
-	ThresholdValue  float64           `json:"thresholdValue"`
-	Aggregation     string            `json:"aggregation"`
-	LookbackMinutes int               `json:"lookbackMinutes"`
-	Tags            map[string]string `json:"tags"`
-}
-
 func evaluateMetricThreshold(ctx context.Context, rule *models.NotificationRule, projectId uuid.UUID) (*EvalResult, error) {
-	var cfg metricThresholdConfig
-	if err := json.Unmarshal(rule.Config, &cfg); err != nil {
-		return nil, fmt.Errorf("invalid metric_threshold config: %w", err)
-	}
-	if cfg.LookbackMinutes <= 0 {
-		cfg.LookbackMinutes = 5
+	cfg, err := parseMetricThresholdConfig(rule.Config)
+	if err != nil {
+		return nil, err
 	}
 
 	now := time.Now().UTC()
@@ -257,44 +245,35 @@ func evaluateMetricThreshold(ctx context.Context, rule *models.NotificationRule,
 		selectExpr = "argMax(value, recorded_at)"
 	}
 
-	query := fmt.Sprintf("SELECT count(), %s FROM metric_points WHERE project_id = ? AND name = ? AND recorded_at >= ? AND recorded_at <= ?", selectExpr)
-	args := []interface{}{projectId, cfg.MetricName, from, now}
+	groupExpr, args := metricGroupExpr(cfg.GroupBy, "tags[?]")
+	query := fmt.Sprintf("SELECT %s AS group_key, %s FROM metric_points WHERE project_id = ? AND name = ? AND recorded_at >= ? AND recorded_at <= ?", groupExpr, selectExpr)
+	args = append(args, projectId, cfg.MetricName, from, now)
 	for _, k := range slices.Sorted(maps.Keys(cfg.Tags)) {
 		query += " AND tags[?] = ?"
 		args = append(args, k, cfg.Tags[k])
 	}
+	query += " GROUP BY group_key ORDER BY group_key LIMIT ?"
+	args = append(args, maxMetricRuleSeriesScanned)
 
-	var count uint64
-	var value float64
-	err := chdb.Conn.QueryRow(ctx, query, args...).Scan(&count, &value)
+	rows, err := chdb.Conn.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
-	if count == 0 {
-		return &EvalResult{Fired: false}, nil
+	defer rows.Close()
+
+	var series []metricSeries
+	for rows.Next() {
+		var s metricSeries
+		if err := rows.Scan(&s.Key, &s.Value); err != nil {
+			return nil, err
+		}
+		series = append(series, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
-	fired := false
-	switch cfg.Operator {
-	case "gt":
-		fired = value > cfg.ThresholdValue
-	case "gte":
-		fired = value >= cfg.ThresholdValue
-	case "lt":
-		fired = value < cfg.ThresholdValue
-	case "lte":
-		fired = value <= cfg.ThresholdValue
-	case "eq":
-		fired = value == cfg.ThresholdValue
-	}
-
-	if !fired {
-		return &EvalResult{Fired: false}, nil
-	}
-
-	projectName := getProjectName(projectId)
-	msg := buildMetricThresholdMessage(cfg.MetricName, value, cfg.Operator, cfg.ThresholdValue, cfg.Aggregation, cfg.LookbackMinutes, projectName)
-	return &EvalResult{Fired: true, Message: msg}, nil
+	return metricThresholdResult(rule, cfg, series, projectId), nil
 }
 
 // --- No Data ---

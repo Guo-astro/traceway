@@ -77,7 +77,7 @@ func evaluatePolledRules(ctx context.Context) {
 			continue
 		}
 
-		if !statefulRuleTypes[rule.RuleType] && !cooldowns.canFire(rule.Id, rule.CooldownMinutes) {
+		if !statefulRuleTypes[rule.RuleType] && !isPerSeriesRule(rule.RuleType, rule.Config) && !cooldowns.canFire(rule.Id, rule.CooldownMinutes) {
 			continue
 		}
 

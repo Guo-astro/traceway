@@ -242,74 +242,36 @@ func evaluateApdexDrop(ctx context.Context, rule *models.NotificationRule, proje
 
 // --- Metric Threshold ---
 
-type metricThresholdConfig struct {
-	MetricName      string            `json:"metricName"`
-	Operator        string            `json:"operator"`
-	ThresholdValue  float64           `json:"thresholdValue"`
-	Aggregation     string            `json:"aggregation"`
-	LookbackMinutes int               `json:"lookbackMinutes"`
-	Tags            map[string]string `json:"tags"`
-}
-
 func evaluateMetricThreshold(ctx context.Context, rule *models.NotificationRule, projectId uuid.UUID) (*EvalResult, error) {
-	var cfg metricThresholdConfig
-	if err := json.Unmarshal(rule.Config, &cfg); err != nil {
-		return nil, fmt.Errorf("invalid metric_threshold config: %w", err)
-	}
-	if cfg.LookbackMinutes <= 0 {
-		cfg.LookbackMinutes = 5
+	cfg, err := parseMetricThresholdConfig(rule.Config)
+	if err != nil {
+		return nil, err
 	}
 
 	now := time.Now().UTC()
 	from := now.Add(-time.Duration(cfg.LookbackMinutes) * time.Minute)
 
-	where := "project_id = ? AND name = ? AND recorded_at >= ? AND recorded_at <= ?"
-	args := []interface{}{projectId.String(), cfg.MetricName, from.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)}
 	tagExtract := "json_extract"
 	if db.IsDuckDBTelemetry() {
 		tagExtract = "json_extract_string"
 	}
+	groupExpr, args := metricGroupExpr(cfg.GroupBy, "COALESCE("+tagExtract+"(tags, '$.\"' || ? || '\"'), '')")
+	where := "project_id = ? AND name = ? AND recorded_at >= ? AND recorded_at <= ?"
+	args = append(args, projectId.String(), cfg.MetricName, from.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	for _, k := range slices.Sorted(maps.Keys(cfg.Tags)) {
 		where += " AND " + tagExtract + "(tags, '$.\"' || ? || '\"') = ?"
 		args = append(args, k, cfg.Tags[k])
 	}
 
-	var value float64
-	var err error
-
+	var series []metricSeries
 	switch cfg.Aggregation {
-	case "last":
-		err = db.TelemetryDB.QueryRowContext(ctx,
-			"SELECT value FROM metric_points WHERE "+where+" ORDER BY recorded_at DESC LIMIT 1", args...).Scan(&value)
-		if err == sql.ErrNoRows {
-			return &EvalResult{Fired: false}, nil
+	case "last", "p95", "p99":
+		order := "recorded_at DESC"
+		if cfg.Aggregation != "last" {
+			order = "value ASC"
 		}
-		if err != nil {
-			return nil, err
-		}
-	case "p95", "p99":
-		pct := 0.95
-		if cfg.Aggregation == "p99" {
-			pct = 0.99
-		}
-		rows, qErr := db.TelemetryDB.QueryContext(ctx,
-			"SELECT value FROM metric_points WHERE "+where+" ORDER BY value ASC", args...)
-		if qErr != nil {
-			return nil, qErr
-		}
-		defer rows.Close()
-		var vals []float64
-		for rows.Next() {
-			var v float64
-			if err := rows.Scan(&v); err != nil {
-				continue
-			}
-			vals = append(vals, v)
-		}
-		if len(vals) == 0 {
-			return &EvalResult{Fired: false}, nil
-		}
-		value = computePercentile(vals, pct)
+		series, err = scanMetricSeriesValues(ctx, cfg.Aggregation,
+			fmt.Sprintf("SELECT %s AS group_key, value FROM metric_points WHERE %s ORDER BY group_key, %s", groupExpr, where, order), args)
 	default:
 		aggFunc := "avg"
 		switch cfg.Aggregation {
@@ -320,38 +282,83 @@ func evaluateMetricThreshold(ctx context.Context, rule *models.NotificationRule,
 		case "sum":
 			aggFunc = "sum"
 		}
-		query := fmt.Sprintf("SELECT COUNT(value), COALESCE(%s(value), 0) FROM metric_points WHERE %s", aggFunc, where)
-		var count int64
-		err = db.TelemetryDB.QueryRowContext(ctx, query, args...).Scan(&count, &value)
-		if err != nil {
+		query := fmt.Sprintf("SELECT %s AS group_key, COALESCE(%s(value), 0) FROM metric_points WHERE %s GROUP BY group_key ORDER BY group_key LIMIT ?", groupExpr, aggFunc, where)
+		series, err = scanMetricSeries(ctx, query, append(args, maxMetricRuleSeriesScanned))
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return metricThresholdResult(rule, cfg, series, projectId), nil
+}
+
+func scanMetricSeries(ctx context.Context, query string, args []interface{}) ([]metricSeries, error) {
+	rows, err := db.TelemetryDB.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var series []metricSeries
+	for rows.Next() {
+		var s metricSeries
+		if err := rows.Scan(&s.Key, &s.Value); err != nil {
 			return nil, err
 		}
-		if count == 0 {
-			return &EvalResult{Fired: false}, nil
+		series = append(series, s)
+	}
+	return series, rows.Err()
+}
+
+// scanMetricSeriesValues reduces rows ordered by group key to one value per
+// series: the first row for last (newest first), a percentile otherwise
+// (values ascending).
+func scanMetricSeriesValues(ctx context.Context, aggregation string, query string, args []interface{}) ([]metricSeries, error) {
+	rows, err := db.TelemetryDB.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	pct := 0.95
+	if aggregation == "p99" {
+		pct = 0.99
+	}
+	var series []metricSeries
+	var vals []float64
+	flush := func(key string) {
+		if len(vals) == 0 {
+			return
 		}
+		value := vals[0]
+		if aggregation != "last" {
+			value = computePercentile(vals, pct)
+		}
+		series = append(series, metricSeries{Key: key, Value: value})
+		vals = vals[:0]
 	}
 
-	fired := false
-	switch cfg.Operator {
-	case "gt":
-		fired = value > cfg.ThresholdValue
-	case "gte":
-		fired = value >= cfg.ThresholdValue
-	case "lt":
-		fired = value < cfg.ThresholdValue
-	case "lte":
-		fired = value <= cfg.ThresholdValue
-	case "eq":
-		fired = value == cfg.ThresholdValue
+	current := ""
+	for rows.Next() {
+		var key string
+		var v float64
+		if err := rows.Scan(&key, &v); err != nil {
+			return nil, err
+		}
+		if key != current || len(vals) == 0 {
+			flush(current)
+			if len(series) >= maxMetricRuleSeriesScanned {
+				return series, nil
+			}
+			current = key
+		}
+		vals = append(vals, v)
 	}
-
-	if !fired {
-		return &EvalResult{Fired: false}, nil
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
-
-	projectName := getProjectName(projectId)
-	msg := buildMetricThresholdMessage(cfg.MetricName, value, cfg.Operator, cfg.ThresholdValue, cfg.Aggregation, cfg.LookbackMinutes, projectName)
-	return &EvalResult{Fired: true, Message: msg}, nil
+	flush(current)
+	return series, nil
 }
 
 // --- No Data ---

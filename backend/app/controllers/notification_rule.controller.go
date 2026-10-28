@@ -423,13 +423,17 @@ func (ctrl *notificationRuleController) Snooze(ctx *gin.Context) {
 
 var NotificationRuleController = notificationRuleController{}
 
-const maxMetricRuleTagFilters = 20
+const (
+	maxMetricRuleTagFilters = 20
+	maxMetricRuleGroupBy    = 5
+)
 
 func validateRuleConfig(tx *sql.Tx, projectId uuid.UUID, ruleType string, config json.RawMessage) (string, error) {
 	switch ruleType {
 	case "metric_threshold":
 		var cfg struct {
-			Tags map[string]string `json:"tags"`
+			Tags    map[string]string `json:"tags"`
+			GroupBy []string          `json:"groupBy"`
 		}
 		if err := json.Unmarshal(config, &cfg); err != nil {
 			return "The rule configuration is not valid JSON.", nil
@@ -441,6 +445,19 @@ func validateRuleConfig(tx *sql.Tx, projectId uuid.UUID, ruleType string, config
 			if strings.TrimSpace(k) == "" || strings.TrimSpace(v) == "" {
 				return "Every tag filter needs a key and a value.", nil
 			}
+		}
+		if len(cfg.GroupBy) > maxMetricRuleGroupBy {
+			return fmt.Sprintf("A metric rule can group by at most %d tags.", maxMetricRuleGroupBy), nil
+		}
+		seen := make(map[string]bool, len(cfg.GroupBy))
+		for _, k := range cfg.GroupBy {
+			if strings.TrimSpace(k) == "" {
+				return "Group by tag keys cannot be empty.", nil
+			}
+			if seen[k] {
+				return fmt.Sprintf("The tag %q is listed twice in group by.", k), nil
+			}
+			seen[k] = true
 		}
 	case "slo_burn_rate":
 		var cfg struct {

@@ -57,6 +57,10 @@ func checkDownDedupKey(ruleId int, checkId int) string {
 	return ruleStatePrefix(ruleId) + fmt.Sprintf("check_down:%d", checkId)
 }
 
+func metricSeriesDedupKey(ruleId int, groupKey string) string {
+	return ruleStatePrefix(ruleId) + "metric_series:" + groupKey
+}
+
 func ClearRuleState(ruleId int) {
 	cooldowns.mu.Lock()
 	delete(cooldowns.fired, ruleId)

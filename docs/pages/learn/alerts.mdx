@@ -272,10 +272,25 @@ Fires when an aggregated [metric](/learn/metrics) value violates the configured 
 | Threshold Value | 90 | The value compared against the aggregate |
 | Lookback Minutes | 5 | Window the aggregate is computed over |
 | Tag Filters | | Optional `key=value` pairs, comma-separated. Only points whose tags match every pair count. Up to 20 |
+| Group By Tags | | Optional tag keys, comma-separated. Each combination of their values is evaluated as its own series. Up to 5 |
 
 Without tag filters the aggregation spans every series of the metric name. Use a filter to watch one slice, such as `outcome=failed` or `host.name=web-1`. For metrics tagged per host, per disk, or per table, an `avg` can hide one bad series behind healthy ones. Prefer `max` (or `min` for lower-is-bad metrics) so the worst series drives the alert.
 
 Over the API the filters are the `tags` object of the rule config, for example `"tags": {"outcome": "failed"}`. An empty key or value answers 422.
+
+#### Alerting per series
+
+Set Group By Tags to alert on each series separately, for example `site_id` for a gauge reported once per gateway. The aggregate is then computed per combination of the listed tags, and every series that breaches sends its own notification naming it:
+
+```
+[HS API] Metric radius.accounting_freshness_seconds{site_id=RUINS} is 22166.00 (threshold: gt 900.00)
+```
+
+A point without one of the tags falls into a series where that value reads `(empty)`. Tag filters still apply first, so `tags` and `groupBy` combine.
+
+The cooldown is kept per series instead of per rule. A series that keeps breaching is notified again once its cooldown has passed, and a second series that starts breaching meanwhile is notified right away. On an escalation channel each series opens its own page. One evaluation sends at most 50 series notifications, worst first. Any further breaching series are summarized in a single "N more series" notice. Series are read in tag value order and at most 5,000 are evaluated. The per-series cooldowns are held in memory, so after a backend restart a series that is still breaching is notified again.
+
+Over the API the keys are the `groupBy` array of the rule config, for example `"groupBy": ["site_id"]`. An empty or repeated key answers 422.
 
 ### No Data
 

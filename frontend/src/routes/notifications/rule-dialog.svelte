@@ -78,6 +78,7 @@
 	let thresholdValue = $state(90);
 	let aggregation = $state('avg');
 	let metricTags = $state('');
+	let metricGroupBy = $state('');
 	let dataType = $state('any');
 	let silenceMinutes = $state(10);
 	let thresholdCount = $state(100);
@@ -265,6 +266,7 @@
 		thresholdValue = 90;
 		aggregation = 'avg';
 		metricTags = '';
+		metricGroupBy = '';
 		dataType = 'any';
 		silenceMinutes = 10;
 		thresholdCount = 100;
@@ -315,6 +317,7 @@
 				metricTags = Object.entries(cfg.tags ?? {})
 					.map(([k, v]) => `${k}=${v}`)
 					.join(', ');
+				metricGroupBy = (cfg.groupBy ?? []).join(', ');
 				lookbackMinutes = cfg.lookbackMinutes ?? 5;
 				break;
 			case 'no_data':
@@ -405,7 +408,11 @@
 					thresholdValue,
 					aggregation,
 					lookbackMinutes,
-					tags: parseMetricTags(metricTags)
+					tags: parseMetricTags(metricTags),
+					groupBy: metricGroupBy
+						.split(',')
+						.map((k) => k.trim())
+						.filter(Boolean)
 				};
 			case 'no_data':
 				return { dataType, silenceMinutes };
@@ -673,6 +680,13 @@
 							bind:value={metricTags}
 							placeholder="outcome=failed, host.name=web-1"
 						/>
+					</div>
+					<div class="space-y-2">
+						<Label for="cfg-metric-group-by">Group By Tags (optional, comma-separated)</Label>
+						<Input id="cfg-metric-group-by" bind:value={metricGroupBy} placeholder="host.name" />
+						<p class="text-xs text-muted-foreground">
+							Evaluates every series separately and names the breaching one in the alert.
+						</p>
 					</div>
 				{:else if ruleType === 'no_data'}
 					<div class="space-y-2">

@@ -94,7 +94,7 @@ func buildApdexDropMessage(apdex float64, threshold float64, total int64, window
 	}
 }
 
-func buildMetricThresholdMessage(metricName string, value float64, operator string, threshold float64, aggregation string, window int, projectName string) Message {
+func buildMetricThresholdMessage(metricName string, seriesLabel string, value float64, operator string, threshold float64, aggregation string, window int, projectName string) Message {
 	severity := SeverityWarning
 	diff := value - threshold
 	if diff < 0 {
@@ -106,19 +106,40 @@ func buildMetricThresholdMessage(metricName string, value float64, operator stri
 	if aggregation == "" {
 		aggregation = "avg"
 	}
-	headline := fmt.Sprintf("The metric %s has a %s of %.2f over the last %d minutes which violates the threshold %s %.2f.", metricName, aggregation, value, window, operator, threshold)
+	series := metricName + seriesLabel
+	headline := fmt.Sprintf("The metric %s has a %s of %.2f over the last %d minutes which violates the threshold %s %.2f.", series, aggregation, value, window, operator, threshold)
 	return Message{
-		Subject:    fmt.Sprintf("[%s] Metric %s is %.2f (threshold: %s %.2f)", projectName, metricName, value, operator, threshold),
+		Subject:    fmt.Sprintf("[%s] Metric %s is %.2f (threshold: %s %.2f)", projectName, series, value, operator, threshold),
 		Body:       headline,
 		Severity:   severity,
 		URL:        "/metrics?preset=1h",
-		DedupToken: metricName,
+		DedupToken: series,
+		Email: alertEmail(models.EmailAlert{
+			ProjectName: projectName,
+			Headline:    headline,
+			ScopeLabel:  "Metric",
+			Scope:       series,
+			Observed:    fmt.Sprintf("%s %.2f", aggregation, value),
+			Threshold:   fmt.Sprintf("%s %.2f", operator, threshold),
+			WindowMins:  window,
+		}),
+	}
+}
+
+func buildMetricThresholdOverflowMessage(metricName string, count int, operator string, threshold float64, window int, projectName string) Message {
+	headline := fmt.Sprintf("%d more series of the metric %s violate the threshold %s %.2f over the last %d minutes. Group the metric on the metrics page to see them.", count, metricName, operator, threshold, window)
+	return Message{
+		Subject:    fmt.Sprintf("[%s] Metric %s: %d more series breach the threshold (%s %.2f)", projectName, metricName, count, operator, threshold),
+		Body:       headline,
+		Severity:   SeverityWarning,
+		URL:        "/metrics?preset=1h",
+		DedupToken: metricName + ":overflow",
 		Email: alertEmail(models.EmailAlert{
 			ProjectName: projectName,
 			Headline:    headline,
 			ScopeLabel:  "Metric",
 			Scope:       metricName,
-			Observed:    fmt.Sprintf("%s %.2f", aggregation, value),
+			Observed:    fmt.Sprintf("%d more series", count),
 			Threshold:   fmt.Sprintf("%s %.2f", operator, threshold),
 			WindowMins:  window,
 		}),
