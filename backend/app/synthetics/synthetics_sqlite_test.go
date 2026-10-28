@@ -205,7 +205,9 @@ func TestScheduleSkipsBrowserChecksWhenModeOff(t *testing.T) {
 
 func TestExecuteHttpCheckRecordsUp(t *testing.T) {
 	projectId := setupSyntheticsDB(t)
+	var syntheticsHeader atomic.Value
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		syntheticsHeader.Store(r.Header.Get("X-Traceway-Synthetics"))
 		w.WriteHeader(200)
 		fmt.Fprint(w, "hello world")
 	}))
@@ -216,6 +218,10 @@ func TestExecuteHttpCheckRecordsUp(t *testing.T) {
 
 	ScheduleOnce(context.Background(), now)
 	ExecuteOnce(context.Background(), now)
+
+	if got := syntheticsHeader.Load(); got != "1" {
+		t.Errorf("X-Traceway-Synthetics = %v, want 1", got)
+	}
 
 	if runs := allRuns(t); len(runs) != 0 {
 		t.Fatalf("expected run row deleted after execution, got %d rows", len(runs))
