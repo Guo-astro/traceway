@@ -31,6 +31,7 @@ import (
 	"github.com/tracewayapp/traceway/backend/app/retention"
 	"github.com/tracewayapp/traceway/backend/app/services"
 	"github.com/tracewayapp/traceway/backend/app/services/mcpmount"
+	"github.com/tracewayapp/traceway/backend/app/slo"
 	"github.com/tracewayapp/traceway/backend/app/sourcemapbackfill"
 	"github.com/tracewayapp/traceway/backend/app/storage"
 	"github.com/tracewayapp/traceway/backend/app/symbolicator/sourcemap/scopes"
@@ -189,6 +190,7 @@ func Run(opts ...Option) {
 	oncall.StartEscalator(ctx)
 	notifications.StartEvaluator(ctx)
 	synthetics.Start(ctx)
+	slo.Start(ctx)
 	retention.Start(ctx)
 	recordings.Start(ctx)
 	sourcemapbackfill.Start(ctx)
@@ -242,6 +244,7 @@ func Run(opts ...Option) {
 		monitoring.StartTelemetryDBReporter(ctx)
 		monitoring.StartOutboxReporter(ctx)
 		monitoring.StartSyntheticsReporter(ctx)
+		monitoring.StartSLOReporter(ctx)
 	}
 
 	router.GET("/health", func(c *gin.Context) {
@@ -448,6 +451,9 @@ func applyEnvOverrides(cfg *config.Cfg) {
 		{"SMTP_FROM", &cfg.SMTPFrom},
 		{"ONCALL_POLL_SECONDS", &cfg.OncallPollSeconds},
 		{"OUTBOX_POLL_SECONDS", &cfg.OutboxPollSeconds},
+		{"SLO_POLL_SECONDS", &cfg.SLOPollSeconds},
+		{"SLO_COMPUTE_WORKERS", &cfg.SLOComputeWorkers},
+		{"SLO_COMPUTE_TIMEOUT_SECONDS", &cfg.SLOComputeTimeoutSecs},
 		{"SYNTHETICS_POLL_SECONDS", &cfg.SyntheticsPollSeconds},
 		{"SYNTHETICS_BROWSER_MODE", &cfg.SyntheticsBrowserMode},
 		{"SYNTHETICS_BROWSER_SANDBOX", &cfg.SyntheticsBrowserSandbox},
