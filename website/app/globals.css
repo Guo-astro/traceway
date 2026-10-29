@@ -1311,12 +1311,43 @@
   .blog-byline-sep {
     color: var(--fg-3);
   }
-  .prose a.blog-author {
+  .prose .blog-author {
     color: var(--fg-1);
     text-decoration: none;
   }
   .prose a.blog-author:hover {
     color: var(--fg-0);
+  }
+  .blog-author-noted {
+    position: relative;
+    cursor: help;
+  }
+  .blog-author-noted .blog-author-name {
+    text-decoration: underline dotted var(--fg-3);
+    text-underline-offset: 4px;
+  }
+  .blog-author-note {
+    position: absolute;
+    left: 0;
+    top: calc(100% + 8px);
+    z-index: 10;
+    width: max-content;
+    max-width: 320px;
+    padding: 7px 10px;
+    border: 1px solid var(--hair-2);
+    border-radius: 6px;
+    background: var(--ink-3);
+    color: var(--fg-1);
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: normal;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease;
+  }
+  .blog-author-noted:hover .blog-author-note,
+  .blog-author-noted:focus-visible .blog-author-note {
+    opacity: 1;
   }
 
   /* Logo color control */
